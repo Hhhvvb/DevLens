@@ -1,10 +1,12 @@
 import UIKit
+import SwiftUI
 
 final class ViewController: UIViewController {
 
     private let questionTextField = UITextField()
     private let submitButton = UIButton(type: .system)
     private let resultTextView = UITextView()
+    private let apiClient = APIClient()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -125,15 +127,44 @@ final class ViewController: UIViewController {
     }
 
     private func submitQuestion() {
+        guard submitButton.isEnabled else {
+            return
+        }
+        
         view.endEditing(true)
-
+        
         let question = (questionTextField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-
+        
         guard !question.isEmpty else {
             resultTextView.text = "请输入问题，不能只输入空格。"
             return
         }
-
-        resultTextView.text = "收到问题： \(question)"
+        
+        submitButton.isEnabled = false
+        submitButton.configuration?.showsActivityIndicator = true
+        resultTextView.text = "正在提交问题……"
+        
+        Task { [weak self ] in
+            guard let self else {
+                return
+            }
+            
+            defer {
+                self.submitButton.isEnabled = true
+                self.submitButton.configuration?.showsActivityIndicator = false
+            }
+            
+            do {
+                let response = try await self.apiClient.sendQuestion(question)
+                
+                self.resultTextView.text = "\(response.message)\n\n问题长度：\(response.questionLength)"
+            } catch {
+                self.resultTextView.text = "请求失败：\(error.localizedDescription)"
+            }
+        }
     }
+}
+
+#Preview("提问页面") {
+    ViewController()
 }
