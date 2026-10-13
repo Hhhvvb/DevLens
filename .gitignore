@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# macOS / Xcode
+.DS_Store
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
