@@ -3,7 +3,7 @@ import Foundation
 enum QuestionViewState {
     case idle
     case loading
-    case success(EchoResponse)
+    case success(AskResponse)
     case failure(String)
     
     var isLoading: Bool {

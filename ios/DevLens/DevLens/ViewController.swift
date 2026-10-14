@@ -25,7 +25,7 @@ final class ViewController: UIViewController {
         titleLabel.font = .preferredFont(forTextStyle: .largeTitle)
         titleLabel.adjustsFontForContentSizeCategory = true
 
-        questionTextField.placeholder = "例如：网络请求在哪里实现?"
+        questionTextField.placeholder = "例如：UIKit 中 delegate 怎么用？"
         questionTextField.borderStyle = .roundedRect
         questionTextField.font = .preferredFont(forTextStyle: .body)
         questionTextField.adjustsFontForContentSizeCategory = true
@@ -136,10 +136,10 @@ final class ViewController: UIViewController {
             resultTextView.text = "提交后，结果会显示在这里。"
             
         case .loading:
-            resultTextView.text = "正在提交问题……"
+            resultTextView.text = "AI 正在生成回答，请稍候……"
             
         case .success(let response):
-            resultTextView.text = "\(response.message)\n\n问题长度: \(response.questionLength)"
+            resultTextView.text = response.answer
             
         case .failure(let message):
             resultTextView.text = message
