@@ -22,8 +22,12 @@ nonisolated enum APIError: LocalizedError {
 }
 
 @MainActor
-final class APIClient {
+final class APIClient: QuestionService {
+    #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
+    #else
+    private let baseURL = "http://172.20.10.10:8000"
+    #endif
     
     func sendQuestion(_ question: String) async throws -> EchoResponse {
         guard let url = URL(string: "\(baseURL)/v1/echo") else {

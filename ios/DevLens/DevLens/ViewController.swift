@@ -6,13 +6,16 @@ final class ViewController: UIViewController {
     private let questionTextField = UITextField()
     private let submitButton = UIButton(type: .system)
     private let resultTextView = UITextView()
-    private let apiClient = APIClient()
+    private let viewModel = QuestionViewModel(
+        apiClient: APIClient()
+    )
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
         view.backgroundColor = .systemBackground
         setupViews()
+        bindViewModel()
         setupActions()
     }
 
@@ -33,7 +36,6 @@ final class ViewController: UIViewController {
         configuration.cornerStyle = .medium
         submitButton.configuration = configuration
 
-        resultTextView.text = "提交后，结果会显示在这里"
         resultTextView.font = .preferredFont(forTextStyle: .body)
         resultTextView.adjustsFontForContentSizeCategory = true
         resultTextView.isEditable = false
@@ -117,6 +119,33 @@ final class ViewController: UIViewController {
         ])
     }
 
+    private func bindViewModel() {
+        viewModel.onStatChanged = { [weak self ] state in
+            self?.render(state)
+        }
+        
+        render(viewModel.state)
+    }
+    
+    private func render(_ state: QuestionViewState) {
+        submitButton.isEnabled = !state.isLoading
+        submitButton.configuration?.showsActivityIndicator = state.isLoading
+        
+        switch state {
+        case .idle:
+            resultTextView.text = "提交后，结果会显示在这里。"
+            
+        case .loading:
+            resultTextView.text = "正在提交问题……"
+            
+        case .success(let response):
+            resultTextView.text = "\(response.message)\n\n问题长度: \(response.questionLength)"
+            
+        case .failure(let message):
+            resultTextView.text = message
+        }
+    }
+    
     private func setupActions() {
         submitButton.addAction(
             UIAction { [weak self] _ in
@@ -127,41 +156,9 @@ final class ViewController: UIViewController {
     }
 
     private func submitQuestion() {
-        guard submitButton.isEnabled else {
-            return
-        }
-        
         view.endEditing(true)
         
-        let question = (questionTextField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard !question.isEmpty else {
-            resultTextView.text = "请输入问题，不能只输入空格。"
-            return
-        }
-        
-        submitButton.isEnabled = false
-        submitButton.configuration?.showsActivityIndicator = true
-        resultTextView.text = "正在提交问题……"
-        
-        Task { [weak self ] in
-            guard let self else {
-                return
-            }
-            
-            defer {
-                self.submitButton.isEnabled = true
-                self.submitButton.configuration?.showsActivityIndicator = false
-            }
-            
-            do {
-                let response = try await self.apiClient.sendQuestion(question)
-                
-                self.resultTextView.text = "\(response.message)\n\n问题长度：\(response.questionLength)"
-            } catch {
-                self.resultTextView.text = "请求失败：\(error.localizedDescription)"
-            }
-        }
+        viewModel.submit(questionTextField.text ?? "")
     }
 }
 

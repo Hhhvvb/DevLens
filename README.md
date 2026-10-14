@@ -9,6 +9,7 @@ LangChain 和 LangGraph，实现代码库问答与 Crash 诊断。
 - 问题回传与输入校验接口：POST /v1/echo
 - UIKit 提问页面及 Canvas 预览
 - URLSession 请求、JSON 编解码、加载状态与错误显示
+- 提问页面完成基础 MVVM 拆分，支持协议注入及成功、失败 Mock 服务
 
 目前接口用于验证前后端通信，尚未接入大模型。
 
