@@ -143,7 +143,15 @@ final class ViewController: UIViewController {
             resultTextView.text = answer
 
         case .success(let response):
-            resultTextView.text = response.answer
+            if response.sources.isEmpty {
+                resultTextView.text = response.answer
+            } else {
+                let sourceText = response.sources.joined(
+                    separator: "\n"
+                )
+
+                resultTextView.text = "\(response.answer)\n\n" + "—— 本次提供给模型的文件 ——\n" + sourceText
+            }
 
         case .failure(let message):
             resultTextView.text = message

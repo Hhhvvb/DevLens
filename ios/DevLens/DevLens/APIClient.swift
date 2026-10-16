@@ -123,9 +123,15 @@ final class APIClient: QuestionService {
                             throw APIError.invalidResponse
                         }
 
+                        let done = try decoder.decode(
+                            StreamDone.self,
+                            from: data
+                        )
+
                         return AskResponse(
                             question: question,
-                            answer: answer
+                            answer: answer,
+                            sources: done.sources
                         )
 
                     case "error":

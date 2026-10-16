@@ -2,10 +2,11 @@ import os
 import json
 
 from openai import APIError, APITimeoutError
-from llm_service import ask_question, stream_question
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from llm_service import ( ask_question, stream_question, StreamAnswerError )
+from repo_context import SOURCE_FILES
 
 app = FastAPI(title="DevLens")
 class EchoRequest(BaseModel):
@@ -18,7 +19,7 @@ class AskResponse(BaseModel):
     question: str
     answer: str
 
-def encode_sse(event: str, data: dict[str, str]) -> str:
+def encode_sse(event: str, data: dict[str, str | list[str]]) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata:{payload}\n\n"
 
@@ -113,6 +114,12 @@ async def ask_stream(request: AskRequest):
                     has_text = True
 
                 yield encode_sse("delta", {"text": text})
+        except StreamAnswerError as error:
+            yield encode_sse(
+                "error",
+                {"message": str(error)},
+            )
+            return
 
         except (APITimeoutError, TimeoutError):
             yield encode_sse(
@@ -135,7 +142,10 @@ async def ask_stream(request: AskRequest):
             )
             return
 
-        yield encode_sse("done", {})
+        yield encode_sse(
+            "done",
+            {"sources": list(SOURCE_FILES)},
+        )
 
     return StreamingResponse(
         events(),
