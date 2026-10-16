@@ -2,7 +2,7 @@ import asyncio
 import os
 from getpass import getpass
 
-from llm_service import stream_question
+from llm_service import stream_question, StreamAnswerError
 
 from openai import APIError, APITimeoutError
 
@@ -31,6 +31,8 @@ async def main():
     try:
         async for text in stream_question(question):
             print(text, end="", flush=True)
+    except StreamAnswerError as error:
+        print(f"\n\n回答中断：{error}")
     except APITimeoutError:
         print("\n\n连接 AI 服务时发生网络超时，请稍后重试。")
     except TimeoutError:
