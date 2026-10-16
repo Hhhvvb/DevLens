@@ -1,10 +1,10 @@
 import os
+import json
 
 from openai import APIError, APITimeoutError
-
-from llm_service import ask_question
-
+from llm_service import ask_question, stream_question
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="DevLens")
@@ -17,6 +17,10 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     question: str
     answer: str
+
+def encode_sse(event: str, data: dict[str, str]) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata:{payload}\n\n"
 
 @app.get("/health")
 def health():
@@ -82,4 +86,62 @@ async def ask(request: AskRequest):
     return AskResponse(
         question=question,
         answer=answer,
+    )
+
+@app.post("/v1/ask/stream")
+async def ask_stream(request: AskRequest):
+    question = request.question.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=422,
+            detail="问题不能只包含空白字符",
+        )
+
+    if not os.getenv("DEEPSEEK_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail="服务器尚未配置 AI 服务",
+        )
+
+    async def events():
+        has_text = False
+
+        try:
+            async for text in stream_question(question):
+                if text.strip():
+                    has_text = True
+
+                yield encode_sse("delta", {"text": text})
+
+        except (APITimeoutError, TimeoutError):
+            yield encode_sse(
+                "error",
+                {"message": "等待 AI 回答超时，请稍后重试。"},
+            )
+            return
+
+        except APIError:
+            yield encode_sse(
+                "error",
+                {"message": "AI 服务请求失败，请稍后重试。"},
+            )
+            return
+
+        if not has_text:
+            yield encode_sse(
+                "error",
+                {"message": "AI 服务未返回有效文本。"},
+            )
+            return
+
+        yield encode_sse("done", {})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )

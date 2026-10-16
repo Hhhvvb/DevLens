@@ -5,7 +5,9 @@ nonisolated enum APIError: LocalizedError {
     case invalidResponse
     case httpError(Int)
     case networkError(URLError.Code)
-    
+    case streamError(String)
+    case incompleteStream
+
     var errorDescription: String? {
         switch self {
         case .invalidURL:
@@ -38,6 +40,10 @@ nonisolated enum APIError: LocalizedError {
             default:
                 return "网络请求失败，请稍后重试。"
             }
+        case .streamError(let message):
+            return message
+        case .incompleteStream:
+            return "回答尚未完成，连接已结束，请重新提交。"
         }
     }
 }
@@ -47,14 +53,17 @@ final class APIClient: QuestionService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
-    private let baseURL = "http://10.22.154.234:8000"
+    private let baseURL = "http://172.20.10.10:8000"
     #endif
-    
-    func sendQuestion(_ question: String) async throws -> AskResponse {
-        guard let url = URL(string: "\(baseURL)/v1/ask") else {
+
+    func sendQuestion(
+        _ question: String,
+        onUpdate: @MainActor (String) -> Void
+    ) async throws -> AskResponse {
+        guard let url = URL(string: "\(baseURL)/v1/ask/stream") else {
             throw APIError.invalidURL
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 90
@@ -62,33 +71,82 @@ final class APIClient: QuestionService {
             "application/json",
             forHTTPHeaderField: "Content-Type"
         )
-        
-        let payload = AskRequest(question: question)
-        request.httpBody = try JSONEncoder().encode(payload)
-        
-        let data: Data
-        let response: URLResponse
+        request.setValue(
+            "text/event-stream",
+            forHTTPHeaderField: "Accept"
+        )
+        request.httpBody = try JSONEncoder().encode(
+            AskRequest(question: question)
+        )
 
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            let (bytes, response) = try await URLSession.shared.bytes(
+                for: request
+            )
+            defer { bytes.task.cancel() }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse
+            }
+
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.httpError(http.statusCode)
+            }
+
+            guard http.mimeType?.lowercased() == "text/event-stream" else {
+                throw APIError.invalidResponse
+            }
+
+            var event = ""
+            var answer = ""
+            let decoder = JSONDecoder()
+
+            for try await line in bytes.lines {
+                try Task.checkCancellation()
+
+                if line.hasPrefix("event:") {
+                    event = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                } else if line.hasPrefix("data:") {
+                    let data = Data(line.dropFirst(5).utf8)
+
+                    switch event {
+                    case "delta":
+                        let delta = try decoder.decode(
+                            StreamDelta.self,
+                            from: data
+                        )
+                        answer += delta.text
+                        onUpdate(answer)
+
+                    case "done":
+                        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            throw APIError.invalidResponse
+                        }
+
+                        return AskResponse(
+                            question: question,
+                            answer: answer
+                        )
+
+                    case "error":
+                        let failure = try decoder.decode(
+                            StreamFailture.self,
+                            from: data
+                        )
+                        throw APIError.streamError(failure.message)
+
+                    default:
+                        throw APIError.invalidResponse
+                    }
+
+                    event = ""
+                }
+            }
+
+            throw APIError.incompleteStream
         } catch let error as URLError {
             throw APIError.networkError(error.code)
-        }
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw APIError.invalidResponse
-        }
-        
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw APIError.httpError(httpResponse.statusCode)
-        }
-        
-        do {
-            return try JSONDecoder().decode(
-                AskResponse.self,
-                from: data
-            )
-        } catch {
+        } catch is DecodingError {
             throw APIError.invalidResponse
         }
     }

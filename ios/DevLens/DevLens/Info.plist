@@ -13,7 +13,7 @@
                 <key>NSExceptionAllowsInsecureHTTPLoads</key>
                 <true/>
             </dict>
-            <key>10.22.154.234</key>
+            <key>172.20.10.10</key>
             <dict>
                 <key>NSExceptionAllowsInsecureHTTPLoads</key>
                 <true/>

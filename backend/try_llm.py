@@ -2,7 +2,9 @@ import asyncio
 import os
 from getpass import getpass
 
-from llm_service import ask_question
+from llm_service import stream_question
+
+from openai import APIError, APITimeoutError
 
 async def main():
     if not os.getenv("DEEPSEEK_API_KEY"):
@@ -24,13 +26,20 @@ async def main():
         raise ValueError("问题不能为空")
 
     print("正在请求 DeepSeek...")
-    response = await ask_question(question)
-
     print("\n模型回答：")
-    print(response.content)
 
-    print("\nToken 用量：")
-    print(response.usage_metadata)
+    try:
+        async for text in stream_question(question):
+            print(text, end="", flush=True)
+    except APITimeoutError:
+        print("\n\n连接 AI 服务时发生网络超时，请稍后重试。")
+    except TimeoutError:
+        print("\n\n等待模型片段超时，请稍后重试。")
+    except APIError as error:
+        status_code = getattr(error, "status_code", None)
+        print(f"\n\nAI 服务请求失败，状态码：{status_code or '无'}。")
+    else:
+        print("\n\n回答结束。")
 
 if __name__ == "__main__":
     asyncio.run(main())

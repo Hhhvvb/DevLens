@@ -123,29 +123,40 @@ final class ViewController: UIViewController {
         viewModel.onStatChanged = { [weak self ] state in
             self?.render(state)
         }
-        
+
         render(viewModel.state)
     }
-    
+
     private func render(_ state: QuestionViewState) {
-        submitButton.isEnabled = !state.isLoading
+        submitButton.isEnabled = true
+        submitButton.configuration?.title = state.isLoading ? "停止生成" : "提交问题"
         submitButton.configuration?.showsActivityIndicator = state.isLoading
-        
+
         switch state {
         case .idle:
             resultTextView.text = "提交后，结果会显示在这里。"
-            
+
         case .loading:
             resultTextView.text = "AI 正在生成回答，请稍候……"
-            
+
+        case .streaming(let answer):
+            resultTextView.text = answer
+
         case .success(let response):
             resultTextView.text = response.answer
-            
+
         case .failure(let message):
             resultTextView.text = message
+
+        case .cancelled(let answer):
+            if answer.isEmpty {
+                resultTextView.text = "已停止生成。"
+            } else {
+                resultTextView.text = "\(answer)\n\n-- 已停止生成 --"
+            }
         }
     }
-    
+
     private func setupActions() {
         submitButton.addAction(
             UIAction { [weak self] _ in
@@ -157,8 +168,12 @@ final class ViewController: UIViewController {
 
     private func submitQuestion() {
         view.endEditing(true)
-        
-        viewModel.submit(questionTextField.text ?? "")
+
+        if viewModel.state.isLoading {
+            viewModel.cancel()
+        } else {
+            viewModel.submit(questionTextField.text ?? "")
+        }
     }
 }
 
