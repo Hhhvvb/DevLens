@@ -1,10 +1,10 @@
 import asyncio
 import os
+
 from getpass import getpass
-
 from llm_service import stream_question, StreamAnswerError
-
 from openai import APIError, APITimeoutError
+from repo_context import search_code_chunks
 
 async def main():
     if not os.getenv("DEEPSEEK_API_KEY"):
@@ -25,11 +25,12 @@ async def main():
     if not question:
         raise ValueError("问题不能为空")
 
+    chunks = search_code_chunks(question)
     print("正在请求 DeepSeek...")
     print("\n模型回答：")
 
     try:
-        async for text in stream_question(question):
+        async for text in stream_question(question, chunks):
             print(text, end="", flush=True)
     except StreamAnswerError as error:
         print(f"\n\n回答中断：{error}")

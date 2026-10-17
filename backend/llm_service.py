@@ -3,7 +3,12 @@ from collections.abc import AsyncIterator
 from langchain_core.messages import AIMessage
 from langchain_deepseek import ChatDeepSeek
 
-from repo_context import build_repo_context
+from repo_context import ( CodeChunk, build_repo_context, search_code_chunks )
+
+NO_MATCH_ANSWER = (
+    "当前检索范围内没有找到匹配代码片段，无法根据源码回答。"
+    "请补充函数名、类型名或报错关键词后重试。"
+)
 
 def create_model() -> ChatDeepSeek:
     return ChatDeepSeek(
@@ -15,8 +20,8 @@ def create_model() -> ChatDeepSeek:
         extra_body={"thinking": {"type": "disabled"}},
     )
 
-def create_message(question: str) -> list[tuple[str, str]]:
-    context = build_repo_context()
+def create_message(question: str, chunks: list[CodeChunk]) -> list[tuple[str, str]]:
+    context = build_repo_context(chunks)
 
     return [
         (
@@ -41,17 +46,26 @@ def create_message(question: str) -> list[tuple[str, str]]:
     ]
 
 async def ask_question(question: str) -> AIMessage:
+    chunks = search_code_chunks(question)
+
+    if not chunks:
+        return AIMessage(content=NO_MATCH_ANSWER)
+
     model = create_model()
-    messages = create_message(question)
+    messages = create_message(question, chunks)
 
     return await model.ainvoke(messages)
 
 class StreamAnswerError(Exception):
     pass
 
-async def stream_question(question: str) -> AsyncIterator[str]:
+async def stream_question(question: str, chunks: list[CodeChunk]) -> AsyncIterator[str]:
+    if not chunks:
+        yield NO_MATCH_ANSWER
+        return
+
     model = create_model()
-    messages = create_message(question)
+    messages = create_message(question, chunks)
 
     finish_reason: str | None = None
 
