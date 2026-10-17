@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
-from repo_context import SOURCE_FILES
+from repo_context import search_code_chunks
 
 app = FastAPI(title="DevLens")
 class EchoRequest(BaseModel):
@@ -105,11 +105,19 @@ async def ask_stream(request: AskRequest):
             detail="服务器尚未配置 AI 服务",
         )
 
+    chunks = search_code_chunks(question)
+
+    sources: list[str] = []
+
+    for chunk in chunks:
+        if chunk.path not in sources:
+            sources.append(chunk.path)
+
     async def events():
         has_text = False
 
         try:
-            async for text in stream_question(question):
+            async for text in stream_question(question, chunks):
                 if text.strip():
                     has_text = True
 
@@ -144,7 +152,7 @@ async def ask_stream(request: AskRequest):
 
         yield encode_sse(
             "done",
-            {"sources": list(SOURCE_FILES)},
+            {"sources": sources},
         )
 
     return StreamingResponse(
