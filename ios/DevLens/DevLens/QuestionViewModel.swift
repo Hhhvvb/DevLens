@@ -25,7 +25,7 @@ final class QuestionViewModel {
 
     private var requestTask: Task<Void, Never>?
 
-    var onStatChanged: (@MainActor (QuestionViewState) -> Void)?
+    var onStateChanged: (@MainActor (QuestionViewState) -> Void)?
 
     init(apiClient: any QuestionService) {
         self.apiClient = apiClient
@@ -33,7 +33,7 @@ final class QuestionViewModel {
 
     private(set) var state: QuestionViewState = .idle {
         didSet {
-            onStatChanged?(state)
+            onStateChanged?(state)
         }
     }
 

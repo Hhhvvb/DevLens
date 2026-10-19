@@ -120,7 +120,7 @@ final class ViewController: UIViewController {
     }
 
     private func bindViewModel() {
-        viewModel.onStatChanged = { [weak self ] state in
+        viewModel.onStateChanged = { [weak self ] state in
             self?.render(state)
         }
 
