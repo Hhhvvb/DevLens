@@ -1,7 +1,10 @@
 import UIKit
 import SwiftUI
 
-final class ChatViewController: UIViewController, UICollectionViewDataSource {
+final class ChatViewController:
+    UIViewController,
+    UICollectionViewDataSource,
+    UICollectionViewDelegate {
     private var messages: [ChatMessage]
     private let viewModel: QuestionViewModel
     private var activeReplyID: UUID?
@@ -9,6 +12,8 @@ final class ChatViewController: UIViewController, UICollectionViewDataSource {
     private let messageInputView = MessageInputView()
     private var renderTask: Task<Void, Never>?
     private var pendingStreamingState: QuestionViewState?
+    private var shouldFollowLatest = true
+    private var shouldResumeAfterScrolling = false
 
     private let messageRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, ChatMessage> {
         cell, _, message in
@@ -56,6 +61,7 @@ final class ChatViewController: UIViewController, UICollectionViewDataSource {
         collectionView.backgroundColor = .systemBackground
         collectionView.allowsSelection = false
         collectionView.dataSource = self
+        collectionView.delegate = self
         collectionView.keyboardDismissMode = .onDrag
         collectionView.alwaysBounceVertical = true
 
@@ -84,6 +90,12 @@ final class ChatViewController: UIViewController, UICollectionViewDataSource {
         }
 
         render(viewModel.state)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+
+        followLatestIfNeeded()
     }
 
     func collectionView(
@@ -159,13 +171,14 @@ final class ChatViewController: UIViewController, UICollectionViewDataSource {
             section: 0
         )
 
-        collectionView.insertItems(at: [questionPath, replyPath])
+        shouldFollowLatest = true
 
-        collectionView.scrollToItem(
-            at: replyPath,
-            at: .bottom,
-            animated: true
-        )
+        UIView.performWithoutAnimation {
+            collectionView.insertItems(at: [questionPath, replyPath])
+
+            collectionView.layoutIfNeeded()
+            scrollToLatest()
+        }
 
         viewModel.submit(text)
     }
@@ -213,6 +226,7 @@ final class ChatViewController: UIViewController, UICollectionViewDataSource {
             collectionView.reconfigureItems(at: [IndexPath(item: index, section: 0)])
 
             collectionView.layoutIfNeeded()
+            followLatestIfNeeded()
         }
 
         if !state.isLoading {
@@ -260,6 +274,115 @@ final class ChatViewController: UIViewController, UICollectionViewDataSource {
             self.pendingStreamingState = nil
             self.render(latesState)
         }
+    }
+
+    private var isUserDragging: Bool {
+        let state = collectionView.panGestureRecognizer.state
+        return state == .began || state == .changed
+    }
+
+    private var bottomOffsetY: CGFloat {
+        let inset = collectionView.adjustedContentInset
+
+        return max(-inset.top, collectionView.contentSize.height - collectionView.bounds.height + inset.bottom)
+    }
+
+    private var isNearBottom: Bool {
+        bottomOffsetY - collectionView.contentOffset.y <= 44
+    }
+
+    private func scrollToLatest() {
+        guard !messages.isEmpty else {
+            return
+        }
+
+        let target = CGPoint(
+            x: collectionView.contentOffset.x,
+            y: bottomOffsetY
+        )
+
+        guard abs(target.y - collectionView.contentOffset.y) > 0.5 else {
+            return
+        }
+
+        collectionView.setContentOffset(target, animated: false)
+    }
+
+    private func followLatestIfNeeded() {
+        guard shouldFollowLatest,
+              !collectionView.isTracking,
+              !isUserDragging,
+              !collectionView.isDecelerating else {
+            return
+        }
+
+        scrollToLatest()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        shouldFollowLatest = false
+        shouldResumeAfterScrolling = false
+    }
+
+    func scrollViewDidEndDragging(
+        _ scrollView: UIScrollView,
+        willDecelerate decelerate: Bool
+    ) {
+        if decelerate {
+            resumeFollowingIfNeeded()
+        } else {
+            finishUserScrolling()
+        }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        finishUserScrolling()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard isUserDragging || scrollView.isDecelerating else {
+            return
+        }
+
+        let velocityY = scrollView.panGestureRecognizer
+            .velocity(in: scrollView).y
+
+        if isUserDragging && velocityY > 0 {
+            shouldResumeAfterScrolling = false
+        } else if isNearBottom {
+            shouldResumeAfterScrolling = true
+        }
+
+        resumeFollowingIfNeeded()
+    }
+
+    private func resumeFollowingIfNeeded() {
+        guard viewModel.state.isLoading,
+              !shouldFollowLatest,
+              shouldResumeAfterScrolling,
+              !collectionView.isTracking,
+              !isUserDragging else {
+            return
+        }
+
+        shouldFollowLatest = true
+
+        if #available(iOS 17.4, *) {
+            collectionView.stopScrollingAndZooming()
+        }
+
+        followLatestIfNeeded()
+    }
+
+    private func finishUserScrolling() {
+        guard viewModel.state.isLoading else {
+            shouldFollowLatest = false
+            shouldResumeAfterScrolling = false
+            return
+        }
+
+        shouldFollowLatest = shouldResumeAfterScrolling || isNearBottom
+        followLatestIfNeeded()
     }
 }
 
