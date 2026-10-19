@@ -14,6 +14,7 @@ final class ChatViewController:
     private var pendingStreamingState: QuestionViewState?
     private var shouldFollowLatest = true
     private var shouldResumeAfterScrolling = false
+    private let latestButton = UIButton(type: .system)
 
     private let messageRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, ChatMessage> {
         cell, _, message in
@@ -66,6 +67,7 @@ final class ChatViewController:
         collectionView.alwaysBounceVertical = true
 
         setupLayout()
+        setupLatestButton()
 
         let dismissTap = UITapGestureRecognizer(
             target: self, action: #selector(dismissKeyboard)
@@ -96,6 +98,7 @@ final class ChatViewController:
         super.viewDidLayoutSubviews()
 
         followLatestIfNeeded()
+        updateLatestButtonVisibility()
     }
 
     func collectionView(
@@ -227,6 +230,7 @@ final class ChatViewController:
 
             collectionView.layoutIfNeeded()
             followLatestIfNeeded()
+            updateLatestButtonVisibility()
         }
 
         if !state.isLoading {
@@ -340,6 +344,8 @@ final class ChatViewController:
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        updateLatestButtonVisibility()
+
         guard isUserDragging || scrollView.isDecelerating else {
             return
         }
@@ -383,6 +389,63 @@ final class ChatViewController:
 
         shouldFollowLatest = shouldResumeAfterScrolling || isNearBottom
         followLatestIfNeeded()
+    }
+
+    private func setupLatestButton() {
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = "回到最新"
+        configuration.image = UIImage(systemName: "arrow.down")
+        configuration.imagePadding = 6
+        configuration.cornerStyle = .capsule
+
+        latestButton.configuration = configuration
+        latestButton.isHidden = true
+        latestButton.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(latestButton)
+
+        NSLayoutConstraint.activate([
+            latestButton.trailingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.trailingAnchor,
+                constant: -16
+            ),
+            latestButton.bottomAnchor.constraint(
+                equalTo: messageInputView.topAnchor,
+                constant: -12
+            ),
+            latestButton.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: 44
+            )
+        ])
+
+        latestButton.addAction(
+            UIAction { [weak self] _ in
+                self?.jumpToLatest()
+            },
+            for: .touchUpInside
+        )
+    }
+
+    private func jumpToLatest() {
+        guard !messages.isEmpty else {
+            return
+        }
+
+        shouldResumeAfterScrolling = false
+
+        if #available(iOS 17.4, *) {
+            collectionView.stopScrollingAndZooming()
+        }
+
+        shouldFollowLatest = viewModel.state.isLoading
+
+        collectionView.layoutIfNeeded()
+        scrollToLatest()
+        updateLatestButtonVisibility()
+    }
+
+    private func updateLatestButtonVisibility() {
+        latestButton.isHidden = messages.isEmpty || isNearBottom
     }
 }
 
