@@ -59,8 +59,10 @@ final class ChatViewController:
         super.viewDidLoad()
 
         title = "DevLens"
+
+        view.backgroundColor = .systemBackground
         collectionView.backgroundColor = .systemBackground
-        collectionView.allowsSelection = false
+        collectionView.allowsSelection = true
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.keyboardDismissMode = .onDrag
@@ -116,6 +118,36 @@ final class ChatViewController:
             using: messageRegistration,
             for: indexPath,
             item: messages[indexPath.item]
+        )
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        shouldSelectItemAt indexPath: IndexPath
+    ) -> Bool {
+        let message = messages[indexPath.item]
+
+        return message.role == .assistant && !message.sourceChunks.isEmpty
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        didSelectItemAt indexPath: IndexPath
+    ) {
+        collectionView.deselectItem(
+            at: indexPath,
+            animated: false
+        )
+        view.endEditing(true)
+
+        let message = messages[indexPath.item]
+        guard !message.sourceChunks.isEmpty else { return }
+
+        let sourceList = SourceListViewController(sources: message.sourceChunks)
+
+        navigationController?.pushViewController(
+            sourceList,
+            animated: true
         )
     }
 
@@ -210,10 +242,14 @@ final class ChatViewController:
             text = answer
 
         case .success(let response):
-            if response.sources.isEmpty {
+            messages[index].sourceChunks = response.sourceChunks
+
+            if response.sourceChunks.isEmpty {
                 text = response.answer
             } else {
-                text = response.answer + "\n\n—— 本次提供给模型的文件 ——\n" + response.sources.joined(separator: "\n")
+                let count = response.sourceChunks.count
+
+                text = response.answer + "\n\n—— 本次参考源码 ——\n" + "\n共 \(count) 个片段 · 点击这条回答查看 ›"
             }
 
         case .failure(let message):

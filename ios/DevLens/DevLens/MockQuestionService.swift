@@ -37,7 +37,9 @@ final class MockQuestionService: QuestionService {
             return AskResponse(
                 question: question,
                 answer: answer,
-                sources: []
+                sources: [],
+                sourceChunks: []
+
             )
 
         case .failure:

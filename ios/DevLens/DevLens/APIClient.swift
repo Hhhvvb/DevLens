@@ -131,7 +131,8 @@ final class APIClient: QuestionService {
                         return AskResponse(
                             question: question,
                             answer: answer,
-                            sources: done.sources
+                            sources: done.sources,
+                            sourceChunks: done.sourceChunks
                         )
 
                     case "error":

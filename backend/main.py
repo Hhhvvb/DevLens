@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
 from repo_context import search_code_chunks
+from dataclasses import asdict
 
 app = FastAPI(title="DevLens")
 class EchoRequest(BaseModel):
@@ -19,7 +20,7 @@ class AskResponse(BaseModel):
     question: str
     answer: str
 
-def encode_sse(event: str, data: dict[str, str | list[str]]) -> str:
+def encode_sse(event: str, data: dict[str, object]) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata:{payload}\n\n"
 
@@ -108,8 +109,11 @@ async def ask_stream(request: AskRequest):
     chunks = search_code_chunks(question)
 
     sources: list[str] = []
+    source_chunks: list[dict[str, object]] = []
 
     for chunk in chunks:
+        source_chunks.append(asdict(chunk))
+
         if chunk.path not in sources:
             sources.append(chunk.path)
 
@@ -152,7 +156,10 @@ async def ask_stream(request: AskRequest):
 
         yield encode_sse(
             "done",
-            {"sources": sources},
+            {
+                "sources": sources,
+                "source_chunks": source_chunks,
+            },
         )
 
     return StreamingResponse(
