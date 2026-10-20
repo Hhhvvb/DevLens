@@ -9,14 +9,17 @@ nonisolated struct ChatMessage: Identifiable {
     let id: UUID
     let role: ChatRole
     var text: String
+    var sourceChunks: [SourceChunk]
 
     init(
         id: UUID = UUID(),
         role: ChatRole,
-        text: String
+        text: String,
+        sourceChunks: [SourceChunk] = []
     ) {
         self.id = id
         self.role = role
         self.text = text
+        self.sourceChunks = sourceChunks
     }
 }
