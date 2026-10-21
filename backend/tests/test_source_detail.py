@@ -34,19 +34,24 @@ class SourceDetailsTests(unittest.TestCase):
                 {"DEEPSEEK_API_KEY": "test-only"},
             ),
             patch(
-                "main.search_code_chunks",
-                return_value=chunks,
-            ),
+                "main.CodeRetriever",
+            ) as retriever_class,
             patch(
                 "main.stream_question",
                 side_effect=fake_stream,
             ) as stream_mock,
             TestClient(app) as client,
         ):
+            retriever_class.return_value.search.return_value = chunks
             response = client.post(
                 "/v1/ask/stream",
                 json={"question": "解释这段代码"},
             )
+
+        retriever_class.assert_called_once_with()
+        retriever_class.return_value.search.assert_called_once_with(
+            "解释这段代码"
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(

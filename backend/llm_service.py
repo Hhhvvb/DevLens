@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator
 from langchain_core.messages import AIMessage
 from langchain_deepseek import ChatDeepSeek
 
-from repo_context import ( CodeChunk, build_repo_context, search_code_chunks )
+from repo_context import ( CodeChunk, build_repo_context )
 
 NO_MATCH_ANSWER = (
     "当前检索范围内没有找到匹配代码片段，无法根据源码回答。"
@@ -45,9 +45,7 @@ def create_message(question: str, chunks: list[CodeChunk]) -> list[tuple[str, st
         ),
     ]
 
-async def ask_question(question: str) -> AIMessage:
-    chunks = search_code_chunks(question)
-
+async def ask_question(question: str, chunks: list[CodeChunk]) -> AIMessage:
     if not chunks:
         return AIMessage(content=NO_MATCH_ANSWER)
 

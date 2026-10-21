@@ -225,3 +225,6 @@ DerivedData/
 build/
 xcuserdata/
 *.xcuserstate
+
+# 本地源码向量索引
+/backend/.chroma/

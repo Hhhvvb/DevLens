@@ -4,7 +4,7 @@ import os
 from getpass import getpass
 from llm_service import stream_question, StreamAnswerError
 from openai import APIError, APITimeoutError
-from repo_context import search_code_chunks
+from code_retriever import CodeRetriever
 
 async def main():
     if not os.getenv("DEEPSEEK_API_KEY"):
@@ -25,7 +25,13 @@ async def main():
     if not question:
         raise ValueError("问题不能为空")
 
-    chunks = search_code_chunks(question)
+    try:
+        retriever = await asyncio.to_thread(CodeRetriever)
+        chunks = await asyncio.to_thread(retriever.search, question)
+    except (ValueError, RuntimeError) as error:
+        print(f"检索失败：{error}")
+        return
+
     print("正在请求 DeepSeek...")
     print("\n模型回答：")
 
