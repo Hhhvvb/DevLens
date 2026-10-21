@@ -1,15 +1,35 @@
 import os
 import json
+import asyncio
 
 from openai import APIError, APITimeoutError
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
-from repo_context import search_code_chunks
 from dataclasses import asdict
+from contextlib import asynccontextmanager
+from starlette.concurrency import run_in_threadpool
+from code_retriever import CodeRetriever
+from repo_context import CodeChunk
 
-app = FastAPI(title="DevLens")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.retriever = await run_in_threadpool(
+        CodeRetriever
+    )
+    app.state.retrieval_lock = asyncio.Lock()
+
+    try:
+        yield
+    finally:
+        del app.state.retriever
+
+app = FastAPI(
+    title="DevLens",
+    lifespan=lifespan,
+)
+
 class EchoRequest(BaseModel):
     question: str = Field(min_length=1, max_length=3000)
 
@@ -23,6 +43,27 @@ class AskResponse(BaseModel):
 def encode_sse(event: str, data: dict[str, object]) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata:{payload}\n\n"
+
+async def retrieve_chunks(
+    http_request: Request,
+    question: str,
+) -> list[CodeChunk]:
+    try:
+        async with http_request.app.state.retrieval_lock:
+            return await run_in_threadpool(
+                http_request.app.state.retriever.search,
+                question,
+            )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="代码检索暂不可用，请检查索引或服务日志。",
+        ) from error
 
 @app.get("/health")
 def health():
@@ -49,7 +90,10 @@ def echo(request: EchoRequest):
     }
 
 @app.post("/v1/ask", response_model=AskResponse)
-async def ask(request: AskRequest):
+async def ask(
+    request: AskRequest,
+    http_request: Request,
+):
     question = request.question.strip()
 
     if not question:
@@ -64,8 +108,13 @@ async def ask(request: AskRequest):
             detail="服务器尚未配置 AI 服务",
         )
 
+    chunks = await retrieve_chunks(
+        http_request,
+        question,
+    )
+
     try:
-        response = await ask_question(question)
+        response = await ask_question(question, chunks)
     except APITimeoutError as error:
         raise HTTPException(
             status_code=504,
@@ -91,7 +140,10 @@ async def ask(request: AskRequest):
     )
 
 @app.post("/v1/ask/stream")
-async def ask_stream(request: AskRequest):
+async def ask_stream(
+    request: AskRequest,
+    http_request: Request,
+):
     question = request.question.strip()
 
     if not question:
@@ -106,7 +158,10 @@ async def ask_stream(request: AskRequest):
             detail="服务器尚未配置 AI 服务",
         )
 
-    chunks = search_code_chunks(question)
+    chunks = await retrieve_chunks(
+        http_request,
+        question,
+    )
 
     sources: list[str] = []
     source_chunks: list[dict[str, object]] = []

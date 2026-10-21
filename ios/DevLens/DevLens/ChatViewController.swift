@@ -151,6 +151,37 @@ final class ChatViewController:
         )
     }
 
+    func collectionView(
+        _ collectionView: UICollectionView,
+        contextMenuConfigurationForItemsAt indexPaths: [IndexPath],
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let indexPath = indexPaths.first,
+              messages.indices.contains(indexPath.item) else {
+            return nil
+        }
+
+        let text = messages[indexPath.item].text
+
+        guard !text.isEmpty else {
+            return nil
+        }
+
+        return UIContextMenuConfiguration(
+            identifier: nil,
+            previewProvider: nil
+        ) { _ in
+            let copyAction = UIAction(
+                title: "复制消息",
+                image: UIImage(systemName: "doc.on.doc")
+            ) { _ in
+                UIPasteboard.general.string = text
+            }
+
+            return UIMenu(children: [copyAction])
+        }
+    }
+
     private func setupLayout() {
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         messageInputView.translatesAutoresizingMaskIntoConstraints = false

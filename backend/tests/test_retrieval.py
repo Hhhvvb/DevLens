@@ -66,7 +66,7 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chunks, [])
 
             with patch("llm_service.create_model") as create_model:
-                response = await ask_question("向量数据库")
+                response = await ask_question("向量数据库", chunks)
 
                 parts = []
                 async for text in stream_question(

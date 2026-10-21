@@ -89,6 +89,7 @@ def tokenize_for_search(text: str) -> set[str]:
 def search_code_chunks(
     question: str,
     top_k: int = 3,
+    chunks: list[CodeChunk] | None = None,
 ) -> list[CodeChunk]:
     if top_k <= 0:
         raise ValueError("top_k 必须大于 0")
@@ -98,9 +99,12 @@ def search_code_chunks(
     if not query_tokens:
         return []
 
+    if chunks is None:
+        chunks = load_code_chunks()
+
     scored_chunks: list[tuple[int, CodeChunk]] = []
 
-    for chunk in load_code_chunks():
+    for chunk in chunks:
         searchable_text = f"{chunk.path}\n{chunk.content}"
         chunk_tokens = tokenize_for_search(searchable_text)
 
