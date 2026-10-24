@@ -6,6 +6,7 @@ final class MockQuestionService: QuestionService {
     enum Scenario {
         case success
         case failure
+        case interrupted
     }
 
     private let scenario: Scenario
@@ -53,6 +54,20 @@ final class MockQuestionService: QuestionService {
 
         case .failure:
             throw APIError.networkError(.notConnectedToInternet)
+
+        case .interrupted:
+            let partialAnswer = """
+            下面是示例：
+
+            ```swift
+            guard !Task.isCancelled else {
+            """
+
+            onUpdate(partialAnswer)
+
+            try await Task.sleep(for: .seconds(2))
+
+            throw APIError.networkError(.networkConnectionLost)
         }
     }
 }

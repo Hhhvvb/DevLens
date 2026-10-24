@@ -5,7 +5,7 @@ enum QuestionViewState {
     case loading
     case streaming(String)
     case success(AskResponse)
-    case failure(String)
+    case failure(answer: String, message: String)
     case cancelled(String)
 
     var isLoading: Bool {
@@ -47,7 +47,10 @@ final class QuestionViewModel {
         )
 
         guard !question.isEmpty else {
-            state = .failure("请输入问题，不能只输入空格。")
+            state = .failure(
+                answer: "",
+                message: "请输入问题，不能只输入空格。"
+            )
             return
         }
 
@@ -83,11 +86,10 @@ final class QuestionViewModel {
 
                 let message = "请求失败：\(error.localizedDescription)"
 
-                if partialAnswer.isEmpty {
-                    self.state = .failure(message)
-                } else {
-                    self.state = .failure("\(partialAnswer)\n\n—— 回答中断 ——\n\(message)")
-                }
+                self.state = .failure(
+                    answer: partialAnswer,
+                    message: message
+                )
             }
         }
     }

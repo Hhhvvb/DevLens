@@ -231,29 +231,36 @@ final class ChatViewController:
         }
 
         let text: String
+        let statusText: String?
 
         switch state {
         case .idle:
             return
 
         case .loading:
-            text = "正在思考..."
+            text = ""
+            statusText = "正在思考..."
 
         case .streaming(let answer):
             text = answer
+            statusText = nil
 
         case .success(let response):
             messages[index].sourceChunks = response.sourceChunks
             text = response.answer
+            statusText = nil
 
-        case .failure(let message):
-            text = message
+        case .failure(let answer, let message):
+            text = answer
+            statusText = answer.isEmpty ? message : "回答中断\n\(message)"
 
         case .cancelled(let answer):
-            text = answer.isEmpty ? "已停止生成。" : answer + "\n\n—— 已停止生成 ——"
+            text = answer
+            statusText = "已停止生成。"
         }
 
         messages[index].text = text
+        messages[index].statusText = statusText
 
         UIView.performWithoutAnimation {
             collectionView.reconfigureItems(at: [IndexPath(item: index, section: 0)])

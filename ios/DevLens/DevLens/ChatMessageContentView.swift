@@ -7,6 +7,7 @@ final class ChatMessageContentView: UIView {
     private var bodyView: UIView?
     private var representedMessageID: UUID?
     private let sourceButton = UIButton(type: .system)
+    private let statusLabel = UILabel()
 
     var onShowSources: (() -> Void)?
 
@@ -22,6 +23,14 @@ final class ChatMessageContentView: UIView {
         stackView.alignment = .fill
         stackView.spacing = 8
         stackView.addArrangedSubview(roleLabel)
+
+        statusLabel.font = .preferredFont(forTextStyle: .subheadline)
+        statusLabel.textColor = .secondaryLabel
+        statusLabel.numberOfLines = 0
+        statusLabel.adjustsFontForContentSizeCategory = true
+        statusLabel.isHidden = true
+
+        stackView.addArrangedSubview(statusLabel)
 
         var configuration = UIButton.Configuration.plain()
         configuration.contentInsets = NSDirectionalEdgeInsets(
@@ -57,6 +66,10 @@ final class ChatMessageContentView: UIView {
 
     func configure(with message: ChatMessage) {
         roleLabel.text = message.role == .user ? "你" : "DevLens"
+        statusLabel.text = message.statusText
+        statusLabel.isHidden = message.statusText?.isEmpty ?? true
+        bodyView?.isHidden = message.text.isEmpty
+
         let sourceCount = message.sourceChunks.count
         let hasSources = message.role == .assistant && sourceCount > 0
 
@@ -104,6 +117,7 @@ final class ChatMessageContentView: UIView {
             newBodyView = MarkdownAnswerView(markdown: message.text)
         }
 
+        newBodyView.isHidden = message.text.isEmpty
         stackView.insertArrangedSubview(newBodyView, at: 1)
         bodyView = newBodyView
         representedMessageID = message.id
