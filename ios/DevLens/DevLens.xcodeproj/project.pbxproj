@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		21BAD4FF3088FAEA00E074E3 /* Markdown in Frameworks */ = {isa = PBXBuildFile; productRef = 21BAD4FE3088FAEA00E074E3 /* Markdown */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		2192554B307D07C1002ABDEA /* DevLens.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DevLens.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -35,6 +39,7 @@
 		21925548307D07C1002ABDEA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				21BAD4FF3088FAEA00E074E3 /* Markdown in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -73,6 +78,9 @@
 				2192554D307D07C1002ABDEA /* DevLens */,
 			);
 			name = DevLens;
+			packageProductDependencies = (
+				21BAD4FE3088FAEA00E074E3 /* Markdown */,
+			);
 			productName = DevLens;
 			productReference = 2192554B307D07C1002ABDEA /* DevLens.app */;
 			productType = "com.apple.product-type.application";
@@ -101,6 +109,9 @@
 			);
 			mainGroup = 21925542307D07C1002ABDEA;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				21BAD4FD3088FAEA00E074E3 /* XCRemoteSwiftPackageReference "swift-markdown" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2192554C307D07C1002ABDEA /* Products */;
 			projectDirPath = "";
@@ -333,6 +344,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		21BAD4FD3088FAEA00E074E3 /* XCRemoteSwiftPackageReference "swift-markdown" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/swiftlang/swift-markdown.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.7.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		21BAD4FE3088FAEA00E074E3 /* Markdown */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 21BAD4FD3088FAEA00E074E3 /* XCRemoteSwiftPackageReference "swift-markdown" */;
+			productName = Markdown;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 21925543307D07C1002ABDEA /* Project object */;
 	validationLevel = 1;
