@@ -16,19 +16,17 @@ final class ChatViewController:
     private var shouldResumeAfterScrolling = false
     private let latestButton = UIButton(type: .system)
 
-    private let messageRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, ChatMessage> {
-        cell, _, message in
-        var content = cell.defaultContentConfiguration()
+    private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
+        [weak self] cell, _, message in
 
-        content.text = message.role == .user ? "你" : "DevLens"
-        content.secondaryText = message.text
+        let messageID = message.id
 
-        content.textProperties.font = .preferredFont(forTextStyle: .headline)
-        content.secondaryTextProperties.font = .preferredFont(forTextStyle: .body)
-        content.secondaryTextProperties.numberOfLines = 0
-
-        cell.contentConfiguration = content
-        cell.accessories = []
+        cell.configure(
+            with: message,
+            onShowSources: { [weak self] in
+                self?.showSources(for: messageID)
+            }
+        )
     }
 
     init(
@@ -49,6 +47,8 @@ final class ChatViewController:
         )
 
         super.init(nibName: nil, bundle: nil)
+
+        _ = messageRegistration
     }
 
     required init?(coder: NSCoder) {
@@ -62,7 +62,7 @@ final class ChatViewController:
 
         view.backgroundColor = .systemBackground
         collectionView.backgroundColor = .systemBackground
-        collectionView.allowsSelection = true
+        collectionView.allowsSelection = false
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.keyboardDismissMode = .onDrag
@@ -118,36 +118,6 @@ final class ChatViewController:
             using: messageRegistration,
             for: indexPath,
             item: messages[indexPath.item]
-        )
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        shouldSelectItemAt indexPath: IndexPath
-    ) -> Bool {
-        let message = messages[indexPath.item]
-
-        return message.role == .assistant && !message.sourceChunks.isEmpty
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        didSelectItemAt indexPath: IndexPath
-    ) {
-        collectionView.deselectItem(
-            at: indexPath,
-            animated: false
-        )
-        view.endEditing(true)
-
-        let message = messages[indexPath.item]
-        guard !message.sourceChunks.isEmpty else { return }
-
-        let sourceList = SourceListViewController(sources: message.sourceChunks)
-
-        navigationController?.pushViewController(
-            sourceList,
-            animated: true
         )
     }
 
@@ -261,36 +231,36 @@ final class ChatViewController:
         }
 
         let text: String
+        let statusText: String?
 
         switch state {
         case .idle:
             return
 
         case .loading:
-            text = "正在思考..."
+            text = ""
+            statusText = "正在思考..."
 
         case .streaming(let answer):
             text = answer
+            statusText = nil
 
         case .success(let response):
             messages[index].sourceChunks = response.sourceChunks
+            text = response.answer
+            statusText = nil
 
-            if response.sourceChunks.isEmpty {
-                text = response.answer
-            } else {
-                let count = response.sourceChunks.count
-
-                text = response.answer + "\n\n—— 本次参考源码 ——\n" + "\n共 \(count) 个片段 · 点击这条回答查看 ›"
-            }
-
-        case .failure(let message):
-            text = message
+        case .failure(let answer, let message):
+            text = answer
+            statusText = answer.isEmpty ? message : "回答中断\n\(message)"
 
         case .cancelled(let answer):
-            text = answer.isEmpty ? "已停止生成。" : answer + "\n\n—— 已停止生成 ——"
+            text = answer
+            statusText = "已停止生成。"
         }
 
         messages[index].text = text
+        messages[index].statusText = statusText
 
         UIView.performWithoutAnimation {
             collectionView.reconfigureItems(at: [IndexPath(item: index, section: 0)])
@@ -513,6 +483,20 @@ final class ChatViewController:
 
     private func updateLatestButtonVisibility() {
         latestButton.isHidden = messages.isEmpty || isNearBottom
+    }
+
+    private func showSources(for messageID: UUID) {
+        guard let message = messages.first(
+            where: { $0.id == messageID }
+        ), message.role == .assistant, !message.sourceChunks.isEmpty else {
+            return
+        }
+
+        view.endEditing(true)
+
+        let sourceList = SourceListViewController(sources: message.sourceChunks)
+
+        navigationController?.pushViewController(sourceList, animated: true)
     }
 }
 

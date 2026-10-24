@@ -6,6 +6,7 @@ final class MockQuestionService: QuestionService {
     enum Scenario {
         case success
         case failure
+        case interrupted
     }
 
     private let scenario: Scenario
@@ -21,9 +22,18 @@ final class MockQuestionService: QuestionService {
         switch scenario {
         case .success:
             let parts = [
-                "模拟 AI 回答：",
-                "delegate 可以用于传递事件。",
-                "\n通常使用 weak 委托属性避免不必要的强引用。"
+                "## 取消请求\n\n",
+                "取消是 **协作式",
+                "的**，需要主动检查状态。\n\n",
+                "```swift\n",
+                "guard !Task.isCancelled else {\n",
+                "    return\n",
+                "}\n",
+                "```\n\n",
+                "> 检查应放在更新界面之前。\n\n",
+                "- 保留已经生成的内容。\n",
+                "- 阻止旧任务继续更新状态。\n\n",
+                "回答结束。"
             ]
 
             var answer = ""
@@ -44,6 +54,20 @@ final class MockQuestionService: QuestionService {
 
         case .failure:
             throw APIError.networkError(.notConnectedToInternet)
+
+        case .interrupted:
+            let partialAnswer = """
+            下面是示例：
+
+            ```swift
+            guard !Task.isCancelled else {
+            """
+
+            onUpdate(partialAnswer)
+
+            try await Task.sleep(for: .seconds(2))
+
+            throw APIError.networkError(.networkConnectionLost)
         }
     }
 }

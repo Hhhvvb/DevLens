@@ -153,8 +153,8 @@ final class ViewController: UIViewController {
                 resultTextView.text = "\(response.answer)\n\n" + "—— 本次提供给模型的文件 ——\n" + sourceText
             }
 
-        case .failure(let message):
-            resultTextView.text = message
+        case .failure(let answer, let message):
+            resultTextView.text = answer.isEmpty ? message : "\(answer)\n\n—— 回答中断 ——\n\(message)"
 
         case .cancelled(let answer):
             if answer.isEmpty {
