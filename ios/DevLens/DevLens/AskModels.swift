@@ -1,7 +1,21 @@
 import Foundation
 
+nonisolated struct HistoryMessage: Encodable {
+    let role: ChatRole
+    let content: String
+}
+
 nonisolated struct AskRequest: Encodable {
     let question: String
+    let history: [HistoryMessage]
+
+    init(
+        question: String,
+        history: [HistoryMessage] = []
+    ) {
+        self.question = question
+        self.history = history
+    }
 }
 
 nonisolated struct AskResponse: Decodable {
@@ -29,7 +43,7 @@ nonisolated struct StreamDone: Decodable {
     }
 }
 
-nonisolated struct SourceChunk: Decodable {
+nonisolated struct SourceChunk: Codable {
     let path: String
     let startLine: Int
     let endLine: Int

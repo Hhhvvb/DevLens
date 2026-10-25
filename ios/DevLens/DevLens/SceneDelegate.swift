@@ -17,11 +17,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        let chatController = ChatViewController(apiClient: APIClient())
+        let conversationListController = ConversationListViewController(style: .insetGrouped)
 
         let window = UIWindow(windowScene: windowScene)
 
-        window.rootViewController = UINavigationController(rootViewController: chatController)
+        window.rootViewController = UINavigationController(rootViewController: conversationListController)
 
         self.window = window
         window.makeKeyAndVisible()

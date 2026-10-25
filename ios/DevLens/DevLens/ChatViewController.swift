@@ -15,6 +15,8 @@ final class ChatViewController:
     private var shouldFollowLatest = true
     private var shouldResumeAfterScrolling = false
     private let latestButton = UIButton(type: .system)
+    var onMessagesChanged: (([ChatMessage]) -> Void)?
+    private var lastSaveAt: Date?
 
     private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
         [weak self] cell, _, message in
@@ -270,8 +272,16 @@ final class ChatViewController:
             updateLatestButtonVisibility()
         }
 
-        if !state.isLoading {
+        switch state {
+        case .loading:
+            persistMessages(force: true)
+
+        case .streaming:
+            persistMessages(force: false)
+
+        default:
             activeReplyID = nil
+            persistMessages(force: true)
         }
     }
 
@@ -497,6 +507,29 @@ final class ChatViewController:
         let sourceList = SourceListViewController(sources: message.sourceChunks)
 
         navigationController?.pushViewController(sourceList, animated: true)
+    }
+
+    private func persistMessages(force: Bool) {
+        let now = Date()
+
+        if !force,
+           let lastSaveAt,
+           now.timeIntervalSince(lastSaveAt) < 1 {
+            return
+        }
+
+        lastSaveAt = now
+
+        var snapshot = messages
+
+        if let activeReplyID,
+           let index = snapshot.firstIndex(
+            where: { $0.id == activeReplyID }
+           ) {
+            snapshot[index].statusText = "回答尚未完成，请重新提问。"
+        }
+
+        onMessagesChanged?(snapshot)
     }
 }
 

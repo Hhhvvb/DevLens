@@ -1,11 +1,11 @@
 import Foundation
 
-nonisolated enum ChatRole {
+nonisolated enum ChatRole: String, Codable {
     case user
     case assistant
 }
 
-nonisolated struct ChatMessage: Identifiable {
+nonisolated struct ChatMessage: Identifiable, Codable {
     let id: UUID
     let role: ChatRole
     var text: String
