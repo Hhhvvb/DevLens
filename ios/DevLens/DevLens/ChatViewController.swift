@@ -187,6 +187,29 @@ final class ChatViewController:
             return
         }
 
+        let history = messages
+            .filter {
+                !$0.text.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty
+            }
+            .map { message in
+                var content = message.text
+
+                if message.role == .assistant,
+                   let statusText = message.statusText {
+                    content = """
+                    [此问答带有状态提示：\(statusText)]
+                    \(message.text)
+                    """
+                }
+
+                return HistoryMessage(
+                    role: message.role,
+                    content: content
+                )
+            }
+
         let firstNewIndex = messages.count
         let reply = ChatMessage(
             role: .assistant,
@@ -218,7 +241,10 @@ final class ChatViewController:
             scrollToLatest()
         }
 
-        viewModel.submit(text)
+        viewModel.submit(
+            text,
+            history: history
+        )
     }
 
     private func render(_ state: QuestionViewState) {

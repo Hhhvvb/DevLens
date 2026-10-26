@@ -58,6 +58,7 @@ final class APIClient: QuestionService {
 
     func sendQuestion(
         _ question: String,
+        history: [HistoryMessage],
         onUpdate: @MainActor (String) -> Void
     ) async throws -> AskResponse {
         guard let url = URL(string: "\(baseURL)/v1/ask/stream") else {
@@ -76,7 +77,7 @@ final class APIClient: QuestionService {
             forHTTPHeaderField: "Accept"
         )
         request.httpBody = try JSONEncoder().encode(
-            AskRequest(question: question)
+            AskRequest(question: question, history: history)
         )
 
         do {

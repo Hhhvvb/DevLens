@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 from code_retriever import CodeRetriever
 from repo_context import CodeChunk
+from typing import Literal
+from hybrid_retrieval import fuse_rankings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,26 +35,100 @@ app = FastAPI(
 class EchoRequest(BaseModel):
     question: str = Field(min_length=1, max_length=3000)
 
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=16000)
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=3000)
+    history: list[HistoryMessage] = Field(
+        default_factory=list,
+        max_length=40,
+    )
 
 class AskResponse(BaseModel):
     question: str
     answer: str
 
+def prepare_history(
+    request: AskRequest,
+) -> list[tuple[str, str]]:
+    total_length = 0
+    history: list[tuple[str, str]] = []
+
+    for message in request.history:
+        total_length += len(message.content)
+
+        if total_length > 24000:
+            raise HTTPException(
+                status_code=422,
+                detail="当前会话历史过长，请新建会话后继续。",
+            )
+
+        if message.role == "user":
+            role = "human"
+        else:
+            role = "ai"
+
+        history.append((role, message.content))
+
+    return history
+
 def encode_sse(event: str, data: dict[str, object]) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata:{payload}\n\n"
 
+def search_with_history(
+    retriever: CodeRetriever,
+    question: str,
+    history: list[tuple[str, str]],
+) -> list[CodeChunk]:
+    queries = [question]
+
+    for role, content in reversed(history):
+        if role != "human":
+            continue
+
+        previous_question = content.strip()
+
+        if not previous_question:
+            continue
+
+        if previous_question in queries:
+            continue
+
+        queries.append(previous_question)
+
+        if len(queries) >= 3:
+            break
+
+    rankings: list[list[CodeChunk]] = []
+
+    for query in queries:
+        chunks = retriever.search(query)
+        rankings.append(chunks)
+
+    if len(rankings) == 1:
+        selected_chunks = rankings[0]
+    else:
+        selected_chunks = fuse_rankings(rankings, top_k=3)
+
+    return selected_chunks
+
+
+
 async def retrieve_chunks(
     http_request: Request,
     question: str,
+    history: list[tuple[str, str]],
 ) -> list[CodeChunk]:
     try:
         async with http_request.app.state.retrieval_lock:
             return await run_in_threadpool(
-                http_request.app.state.retriever.search,
+                search_with_history,
+                http_request.app.state.retriever,
                 question,
+                history,
             )
     except ValueError as error:
         raise HTTPException(
@@ -102,6 +178,8 @@ async def ask(
             detail="问题不能只包含空白字符",
         )
 
+    history = prepare_history(request)
+
     if not os.getenv("DEEPSEEK_API_KEY"):
         raise HTTPException(
             status_code=503,
@@ -111,10 +189,11 @@ async def ask(
     chunks = await retrieve_chunks(
         http_request,
         question,
+        history,
     )
 
     try:
-        response = await ask_question(question, chunks)
+        response = await ask_question(question, chunks, history)
     except APITimeoutError as error:
         raise HTTPException(
             status_code=504,
@@ -152,6 +231,8 @@ async def ask_stream(
             detail="问题不能只包含空白字符",
         )
 
+    history = prepare_history(request)
+
     if not os.getenv("DEEPSEEK_API_KEY"):
         raise HTTPException(
             status_code=503,
@@ -161,6 +242,7 @@ async def ask_stream(
     chunks = await retrieve_chunks(
         http_request,
         question,
+        history,
     )
 
     sources: list[str] = []
@@ -176,7 +258,7 @@ async def ask_stream(
         has_text = False
 
         try:
-            async for text in stream_question(question, chunks):
+            async for text in stream_question(question, chunks, history):
                 if text.strip():
                     has_text = True
 
