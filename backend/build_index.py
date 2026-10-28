@@ -57,8 +57,9 @@ def main():
         normalize_embeddings=True,
     )
 
-    client = chromadb.PersistentClient(
-        path=str(INDEX_PATH),
+    client = chromadb.HttpClient(
+        host="127.0.0.1",
+        port=8001,
     )
 
     collection = client.get_or_create_collection(

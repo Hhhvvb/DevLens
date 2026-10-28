@@ -13,10 +13,25 @@ from starlette.concurrency import run_in_threadpool
 from code_retriever import CodeRetriever
 from repo_context import CodeChunk
 from typing import Literal
-from hybrid_retrieval import fuse_rankings
+from retrieval_service import search_with_history
+from pathlib import Path
+from uuid import UUID, uuid4
+from generation_models import ( GenerationInput, GenerationSnapshot, GenerationState, )
+from generation_store import ( GenerationConflictError, GenerationStore, )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    database_path = (
+        Path(__file__).resolve().parent
+        / ".data"
+        / "generations.sqlite3"
+    )
+
+    app.state.generation_store = await run_in_threadpool(
+        GenerationStore,
+        database_path,
+    )
+
     app.state.retriever = await run_in_threadpool(
         CodeRetriever
     )
@@ -26,6 +41,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         del app.state.retriever
+        del app.state.generation_store
 
 app = FastAPI(
     title="DevLens",
@@ -45,6 +61,10 @@ class AskRequest(BaseModel):
         default_factory=list,
         max_length=40,
     )
+
+class CreateGenerationRequest(AskRequest):
+    conversation_id: UUID
+    request_id: UUID
 
 class AskResponse(BaseModel):
     question: str
@@ -78,45 +98,6 @@ def encode_sse(event: str, data: dict[str, object]) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata:{payload}\n\n"
 
-def search_with_history(
-    retriever: CodeRetriever,
-    question: str,
-    history: list[tuple[str, str]],
-) -> list[CodeChunk]:
-    queries = [question]
-
-    for role, content in reversed(history):
-        if role != "human":
-            continue
-
-        previous_question = content.strip()
-
-        if not previous_question:
-            continue
-
-        if previous_question in queries:
-            continue
-
-        queries.append(previous_question)
-
-        if len(queries) >= 3:
-            break
-
-    rankings: list[list[CodeChunk]] = []
-
-    for query in queries:
-        chunks = retriever.search(query)
-        rankings.append(chunks)
-
-    if len(rankings) == 1:
-        selected_chunks = rankings[0]
-    else:
-        selected_chunks = fuse_rankings(rankings, top_k=3)
-
-    return selected_chunks
-
-
-
 async def retrieve_chunks(
     http_request: Request,
     question: str,
@@ -148,6 +129,27 @@ def health():
         "service": "DevLens",
         "version": "0.1.0"
     }
+
+@app.get(
+    "/v1/generations/{generation_id}",
+    response_model=GenerationSnapshot,
+)
+async def get_generation(
+    generation_id: UUID,
+    http_request: Request,
+):
+    snapshot = await run_in_threadpool(
+        http_request.app.state.generation_store.get,
+        generation_id,
+    )
+
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail="生成任务不存在",
+        )
+
+    return snapshot
 
 @app.post("/v1/echo")
 def echo(request: EchoRequest):
@@ -298,6 +300,144 @@ async def ask_stream(
                 "source_chunks": source_chunks,
             },
         )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+@app.post(
+    "/v1/generations",
+    response_model=GenerationSnapshot,
+    status_code=202,
+)
+async def create_generation(
+    request: CreateGenerationRequest,
+    http_request: Request,
+):
+    question = request.question.strip()
+
+    if not question:
+        raise HTTPException(
+            status_code=422,
+            detail="问题不能只包含空白字符",
+        )
+
+    history = prepare_history(request)
+
+    task_input = GenerationInput(
+        question=question,
+        history=history,
+    )
+
+    snapshot = GenerationSnapshot(
+        id=request.request_id,
+        conversation_id=request.conversation_id,
+        question_message_id=uuid4(),
+        answer_message_id=uuid4(),
+        state=GenerationState.queued,
+    )
+
+    try:
+        return await run_in_threadpool(
+            http_request.app.state.generation_store.create_or_get,
+            snapshot,
+            task_input,
+        )
+    except GenerationConflictError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        ) from error
+
+@app.post(
+    "/v1/generations/{generation_id}/stop",
+    response_model=GenerationSnapshot,
+)
+async def stop_generation(
+    generation_id: UUID,
+    http_request: Request,
+):
+    snapshot = await run_in_threadpool(
+        http_request.app.state.generation_store.request_stop,
+        generation_id,
+    )
+
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail="生成任务不存在",
+        )
+
+    return snapshot
+
+@app.get("/v1/generations/{generation_id}/events")
+async def subscribe_generation(
+    generation_id: UUID,
+    http_request: Request,
+):
+    store = http_request.app.state.generation_store
+
+    initial = await run_in_threadpool(
+        store.get,
+        generation_id,
+    )
+
+    if initial is None:
+        raise HTTPException(
+            status_code=404,
+            detail="生成任务不存在",
+        )
+
+    async def events():
+        snapshot = initial
+        last_revision = -1
+
+        loop = asyncio.get_running_loop()
+        last_sent_at = loop.time()
+
+        while True:
+            if await http_request.is_disconnected():
+                return
+
+            if snapshot.revision > last_revision:
+                yield encode_sse(
+                    "snapshot",
+                    snapshot.model_dump(mode="json"),
+                )
+
+                last_revision = snapshot.revision
+                last_sent_at = loop.time()
+
+            elif loop.time() - last_sent_at > 15:
+                yield ":ping\n\n"
+                last_sent_at = loop.time()
+
+            if snapshot.state in {
+                GenerationState.completed,
+                GenerationState.cancelled,
+                GenerationState.failed,
+                GenerationState.interrupted,
+            }:
+                return
+
+            await asyncio.sleep(0.25)
+
+            snapshot = await run_in_threadpool(
+                store.get,
+                generation_id,
+            )
+
+            if snapshot is None:
+                yield encode_sse(
+                    "error",
+                    {"message": "生成任务不存在"},
+                )
+                return
 
     return StreamingResponse(
         events(),
