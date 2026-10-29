@@ -14,6 +14,16 @@ nonisolated enum GenerationViewState {
         request: CreateGenerationRequest,
         message: String
     )
+
+    var isLoading: Bool {
+        switch self {
+        case .submitting, .connecting, .receiving:
+            return true
+
+        case .idle, .finished, .connectionFailed, .submissionFailed:
+            return false
+        }
+    }
 }
 
 @MainActor

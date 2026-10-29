@@ -14,12 +14,13 @@ final class ChatViewController:
             conversation.messages = newValue
         }
     }
-    private let viewModel: QuestionViewModel
+    private let viewModel: GenerationViewModel
+    private var isPreparingGeneration = false
     private var activeReplyID: UUID?
     private let collectionView: UICollectionView
     private let messageInputView = MessageInputView()
     private var renderTask: Task<Void, Never>?
-    private var pendingStreamingState: QuestionViewState?
+    private var pendingStreamingState: GenerationViewState?
     private var shouldFollowLatest = true
     private var shouldResumeAfterScrolling = false
     private let latestButton = UIButton(type: .system)
@@ -41,10 +42,11 @@ final class ChatViewController:
 
     init(
         conversation: Conversation = Conversation(),
-        apiClient: any QuestionService
+        apiClient: any GenerationService
     ) {
         self.conversation = conversation
-        self.viewModel = QuestionViewModel(apiClient: apiClient)
+        self.activeReplyID = conversation.activeGeneration?.answerMessageID
+        self.viewModel = GenerationViewModel(apiClient: apiClient)
 
         var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
         configuration.showsSeparators = false
@@ -91,7 +93,15 @@ final class ChatViewController:
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "停止",
             primaryAction: UIAction { [weak self] _ in
-                self?.viewModel.cancel()
+                guard let self else {
+                    return
+                }
+
+                if self.shouldReconnectGeneration {
+                    self.resumeActiveGeneration()
+                } else {
+                    self.viewModel.stop()
+                }
             }
         )
 
@@ -103,7 +113,25 @@ final class ChatViewController:
             self?.receiveState(state)
         }
 
-        render(viewModel.state)
+        viewModel.onStopFailed = { [weak self] message in
+            guard let self else {
+                return
+            }
+
+            let alert = UIAlertController(
+                title: "停止请求失败",
+                message: message,
+                preferredStyle: .alert
+            )
+
+            alert.addAction(
+                UIAlertAction(title: "确定", style: .default)
+            )
+
+            self.present(alert, animated: true)
+        }
+
+        renderGenerationState(viewModel.state)
     }
 
     override func viewDidLayoutSubviews() {
@@ -185,7 +213,8 @@ final class ChatViewController:
     }
 
     private func appendUserMessage(_ rawText: String) {
-        guard !viewModel.state.isLoading else {
+        guard !isPreparingGeneration,
+              conversation.activeGeneration == nil else {
             return
         }
 
@@ -219,14 +248,32 @@ final class ChatViewController:
             }
 
         let firstNewIndex = messages.count
-        let reply = ChatMessage(
-            role: .assistant,
-            text: "正在思考..."
+
+        let question = ChatMessage(
+            role: .user,
+            text: text
         )
 
-        messages.append(
-            ChatMessage(role: .user, text: text)
+        let reply = ChatMessage(
+            role: .assistant,
+            text: "",
+            statusText: "正在保存任务..."
         )
+
+        let request = CreateGenerationRequest(
+            conversationID: conversation.id,
+            requestID: UUID(),
+            question: text,
+            history: history
+        )
+
+        conversation.activeGeneration = ActiveGeneration(
+            request: request,
+            questionMessageID: question.id,
+            answerMessageID: reply.id
+        )
+
+        messages.append(question)
         messages.append(reply)
 
         activeReplyID = reply.id
@@ -249,87 +296,20 @@ final class ChatViewController:
             scrollToLatest()
         }
 
-        viewModel.submit(
-            text,
-            history: history
-        )
-    }
-
-    private func render(_ state: QuestionViewState) {
-        navigationItem.rightBarButtonItem?.isEnabled = state.isLoading
-        messageInputView.setSending(state.isLoading)
-
-        guard let replyID = activeReplyID,
-              let index = messages.firstIndex(
-                where: { $0.id == replyID }
-              ) else {
-            return
-        }
-
-        let text: String
-        let statusText: String?
-
-        switch state {
-        case .idle:
-            return
-
-        case .loading:
-            text = ""
-            statusText = "正在思考..."
-
-        case .streaming(let answer):
-            text = answer
-            statusText = nil
-
-        case .success(let response):
-            messages[index].sourceChunks = response.sourceChunks
-            text = response.answer
-            statusText = nil
-
-        case .failure(let answer, let message):
-            text = answer
-            statusText = answer.isEmpty ? message : "回答中断\n\(message)"
-
-        case .cancelled(let answer):
-            text = answer
-            statusText = "已停止生成。"
-        }
-
-        messages[index].text = text
-        messages[index].statusText = statusText
-
-        UIView.performWithoutAnimation {
-            collectionView.reconfigureItems(at: [IndexPath(item: index, section: 0)])
-
-            collectionView.layoutIfNeeded()
-            followLatestIfNeeded()
-            updateLatestButtonVisibility()
-        }
-
-        switch state {
-        case .loading:
-            persistMessages(force: true)
-
-        case .streaming:
-            persistMessages(force: false)
-
-        default:
-            activeReplyID = nil
-            persistMessages(force: true)
-        }
+        resumeActiveGeneration()
     }
 
     @objc private func dismissKeyboard() {
         view.endEditing(true)
     }
 
-    private func receiveState(_ state: QuestionViewState) {
-        guard case .streaming = state else {
+    private func receiveState(_ state: GenerationViewState) {
+        guard case .receiving = state else {
             renderTask?.cancel()
             renderTask = nil
             pendingStreamingState = nil
 
-            render(state)
+            renderGenerationState(state)
             return
         }
 
@@ -357,7 +337,7 @@ final class ChatViewController:
             }
 
             self.pendingStreamingState = nil
-            self.render(latesState)
+            self.renderGenerationState(latesState)
         }
     }
 
@@ -600,15 +580,237 @@ final class ChatViewController:
 
         return onSaveConversation(conversation)
     }
+
+    private func applyGenerationSnapshot(
+        _ snapshot: GenerationSnapshot
+    ) {
+        guard var active = conversation.activeGeneration,
+              snapshot.conversationID == conversation.id,
+              snapshot.id == active.generationID,
+              let questionIndex = messages.firstIndex(
+                where: { $0.id == active.questionMessageID }
+              ),
+              let answerIndex = messages.firstIndex(
+                where: { $0.id == active.answerMessageID }
+              ) else {
+            return
+        }
+
+        let question = messages[questionIndex]
+
+        messages[questionIndex] = ChatMessage(
+            id: snapshot.questionMessageID,
+            role: .user,
+            text: question.text
+        )
+
+        let statusText: String?
+
+        switch snapshot.state {
+        case .queued:
+            statusText = "正在排队..."
+
+        case .running:
+            statusText = snapshot.answer.isEmpty ? "正在思考..." : nil
+
+        case .stopRequested:
+            statusText = "正在停止..."
+
+        case .completed:
+            statusText = nil
+
+        case .cancelled:
+            statusText = "已停止生成。"
+
+        case .failed:
+            statusText = snapshot.errorMessage ?? "生成失败。"
+
+        case .interrupted:
+            statusText = snapshot.errorMessage ?? "生成已中断。"
+        }
+
+        messages[answerIndex] = ChatMessage(
+            id: snapshot.answerMessageID,
+            role: .assistant,
+            text: snapshot.answer,
+            sourceChunks: snapshot.sourceChunks,
+            statusText: statusText
+        )
+
+        active.questionMessageID = snapshot.questionMessageID
+        active.answerMessageID = snapshot.answerMessageID
+        active.isConfirmed = true
+
+        if snapshot.state.isTerminal {
+            conversation.activeGeneration = nil
+            activeReplyID = nil
+        } else {
+            conversation.activeGeneration = active
+            activeReplyID = active.answerMessageID
+        }
+
+        UIView.performWithoutAnimation {
+            collectionView.reconfigureItems(
+                at: [
+                    IndexPath(item: questionIndex, section: 0),
+                    IndexPath(item: answerIndex, section: 0)
+                ]
+            )
+
+            collectionView.layoutIfNeeded()
+            followLatestIfNeeded()
+            updateLatestButtonVisibility()
+        }
+
+        persistMessages(force: true)
+    }
+
+    private func updateReplyStatus(_ text: String) {
+        guard let replyID = activeReplyID,
+              let index = messages.firstIndex(
+                where: { $0.id == replyID }
+              ) else {
+            return
+        }
+
+        messages[index].statusText = text
+
+        UIView.performWithoutAnimation {
+            collectionView.reconfigureItems(
+                at: [
+                    IndexPath(item: index, section: 0)
+                ]
+            )
+
+            collectionView.layoutIfNeeded()
+            followLatestIfNeeded()
+            updateLatestButtonVisibility()
+        }
+
+        persistMessages(force: true)
+    }
+
+    private func renderGenerationState(
+        _ state: GenerationViewState
+    ) {
+        defer {
+            updateGenerationControls()
+        }
+
+        switch state {
+        case .idle:
+            return
+
+        case .submitting:
+            updateReplyStatus("正在提交任务...")
+
+        case .connecting:
+            updateReplyStatus("正在连接任务...")
+
+        case .receiving(let snapshot):
+            applyGenerationSnapshot(snapshot)
+
+        case .finished(let snapshot):
+            applyGenerationSnapshot(snapshot)
+
+        case .submissionFailed(_, let message):
+            updateReplyStatus("暂时无法确认任务是否创建成功。\n\(message)")
+
+        case .connectionFailed(_, let message):
+            updateReplyStatus("接收连接已断开，任务状态需要重新连接确认。\n\(message)")
+        }
+    }
+
+    private var shouldReconnectGeneration: Bool {
+        guard conversation.activeGeneration != nil,
+              !isPreparingGeneration else {
+            return false
+        }
+
+        switch viewModel.state {
+        case .idle, .submissionFailed, .connectionFailed:
+            return true
+
+        default:
+            return false
+        }
+    }
+
+    private func updateGenerationControls() {
+        let hasActiveGeneration = conversation.activeGeneration != nil
+
+        messageInputView.setSending(isPreparingGeneration || hasActiveGeneration)
+
+        let button = navigationItem.rightBarButtonItem
+
+        if shouldReconnectGeneration {
+            button?.title = "重连"
+            button?.isEnabled = true
+        } else {
+            button?.title = viewModel.isStopping ? "正在停止" : "停止"
+            button?.isEnabled = !isPreparingGeneration && viewModel.canStop
+        }
+    }
+
+    private func resumeActiveGeneration() {
+        guard let active = conversation.activeGeneration,
+              !isPreparingGeneration else {
+            return
+        }
+
+        if active.isConfirmed {
+            viewModel.subscribe(to: active.generationID)
+            return
+        }
+
+        isPreparingGeneration = true
+        updateGenerationControls()
+
+        let operation = saveCurrentConversation()
+        let request = active.request
+
+        Task { [weak self] in
+            do {
+                try await operation.value
+
+                guard let self,
+                      self.conversation.activeGeneration?.generationID == request.requestID else {
+                    return
+                }
+
+                self.isPreparingGeneration = false
+                self.viewModel.submit(request)
+                self.updateGenerationControls()
+            } catch {
+                guard let self else {
+                    return
+                }
+
+                self.isPreparingGeneration = false
+                self.updateReplyStatus("任务信息保存失败，尚未提交本次请求。\n" + error.localizedDescription)
+                self.updateGenerationControls()
+            }
+        }
+    }
 }
 
 
 #Preview("会话列表") {
     UINavigationController(
         rootViewController: ChatViewController(
-            apiClient: MockQuestionService(
-                scenario: .success
-            )
+            conversation: Conversation(
+                messages: [
+                    ChatMessage(
+                        role: .user,
+                        text: "为什么取消后还要检查状态？"
+                    ),
+                    ChatMessage(
+                        role: .assistant,
+                        text: "取消是协作式的，需要主动检查状态。"
+                    )
+                ]
+            ),
+            apiClient: APIClient()
         )
     )
 }
