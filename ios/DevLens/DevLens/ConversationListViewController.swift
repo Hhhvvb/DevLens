@@ -168,15 +168,18 @@ final class ConversationListViewController: UITableViewController {
 
     private func openConversation(_ conversation: Conversation) {
         let controller = ChatViewController(
-            message: conversation.messages,
+            conversation: conversation,
             apiClient: APIClient()
         )
 
-        controller.onMessagesChanged = { [weak self] messages in
-            self?.updateConversation(
-                id: conversation.id,
-                messages: messages
-            )
+        controller.onSaveConversation = { [weak self] conversation in
+            guard let self else {
+                return Task {
+                    throw ConversationStoreError.unavailable
+                }
+            }
+
+            return self.saveConversation(conversation)
         }
 
         navigationController?.pushViewController(
@@ -185,28 +188,19 @@ final class ConversationListViewController: UITableViewController {
         )
     }
 
-    private func updateConversation(
-        id: UUID,
-        messages: [ChatMessage]
-    ) {
+    private func saveConversation(
+        _ conversation: Conversation
+    ) -> Task<Void, Error> {
         guard let store,
               let index = conversations.firstIndex(
-                where: { $0.id == id }
+                where: { $0.id == conversation.id }
               ) else {
-            return
+            return Task {
+                throw ConversationStoreError.unavailable
+            }
         }
 
-        conversations[index].messages = messages
-        conversations[index].updatedAt = Date()
-
-        if let firstQuestion = messages.first(
-            where: { $0.role == .user }
-        ) {
-            conversations[index].title = String(firstQuestion.text.prefix(20))
-        }
-
-        let updatedConversation = conversations[index]
-
+        conversations[index] = conversation
         conversations.sort {
             $0.updatedAt > $1.updatedAt
         }
@@ -214,31 +208,18 @@ final class ConversationListViewController: UITableViewController {
 
         let previousSave = saveTask
 
-        saveTask = Task { [weak self] in
+        let operation = Task {
             if let previousSave {
                 await previousSave.value
             }
 
-            do {
-                try await store.upsert(updatedConversation)
-            } catch {
-                guard let self else {
-                    return
-                }
-
-                let alert = UIAlertController(
-                    title: "保存会话失败",
-                    message: error.localizedDescription,
-                    preferredStyle: .alert
-                )
-
-                alert.addAction(
-                    UIAlertAction(title: "确定", style: .default)
-                )
-
-                let presenter = self.navigationController?.topViewController ?? self
-                presenter.present(alert, animated: true)
-            }
+            try await store.upsert(conversation)
         }
+
+        saveTask = Task {
+            _ = await operation.result
+        }
+
+        return operation
     }
 }

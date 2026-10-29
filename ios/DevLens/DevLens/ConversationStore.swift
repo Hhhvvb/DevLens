@@ -1,5 +1,13 @@
 import Foundation
 
+nonisolated enum ConversationStoreError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? {
+        "会话暂时无法保存，请返回列表后重试。"
+    }
+}
+
 actor ConversationStore {
     private let fileURL: URL
 

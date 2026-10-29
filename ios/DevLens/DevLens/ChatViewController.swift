@@ -5,7 +5,15 @@ final class ChatViewController:
     UIViewController,
     UICollectionViewDataSource,
     UICollectionViewDelegate {
-    private var messages: [ChatMessage]
+    private var conversation: Conversation
+    private var messages: [ChatMessage] {
+        get {
+            conversation.messages
+        }
+        set {
+            conversation.messages = newValue
+        }
+    }
     private let viewModel: QuestionViewModel
     private var activeReplyID: UUID?
     private let collectionView: UICollectionView
@@ -15,7 +23,7 @@ final class ChatViewController:
     private var shouldFollowLatest = true
     private var shouldResumeAfterScrolling = false
     private let latestButton = UIButton(type: .system)
-    var onMessagesChanged: (([ChatMessage]) -> Void)?
+    var onSaveConversation: ((Conversation) -> Task<Void, Error>)?
     private var lastSaveAt: Date?
 
     private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
@@ -32,10 +40,10 @@ final class ChatViewController:
     }
 
     init(
-        message: [ChatMessage] = [],
+        conversation: Conversation = Conversation(),
         apiClient: any QuestionService
     ) {
-        self.messages = message
+        self.conversation = conversation
         self.viewModel = QuestionViewModel(apiClient: apiClient)
 
         var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
@@ -546,16 +554,51 @@ final class ChatViewController:
 
         lastSaveAt = now
 
-        var snapshot = messages
+        let operation = saveCurrentConversation()
 
-        if let activeReplyID,
-           let index = snapshot.firstIndex(
-            where: { $0.id == activeReplyID }
-           ) {
-            snapshot[index].statusText = "回答尚未完成，请重新提问。"
+        Task { [weak self] in
+            do {
+                try await operation.value
+            } catch {
+                guard let self else {
+                    return
+                }
+
+                let alert = UIAlertController(
+                    title: "保存会话失败",
+                    message: error.localizedDescription,
+                    preferredStyle: .alert
+                )
+
+                alert.addAction(
+                    UIAlertAction(title: "确定", style: .default)
+                )
+
+                let presenter = self.navigationController?.topViewController ?? self
+
+                presenter.present(alert, animated: true)
+            }
+        }
+    }
+
+    private func saveCurrentConversation() -> Task<Void, Error> {
+        conversation.updatedAt = Date()
+
+        if let firstQuestion = messages.first(
+            where: { $0.role == .user }
+        ) {
+            conversation.title = String(
+                firstQuestion.text.prefix(20)
+            )
         }
 
-        onMessagesChanged?(snapshot)
+        guard let onSaveConversation else {
+            return Task {
+                throw ConversationStoreError.unavailable
+            }
+        }
+
+        return onSaveConversation(conversation)
     }
 }
 

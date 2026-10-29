@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated struct HistoryMessage: Encodable {
+nonisolated struct HistoryMessage: Codable {
     let role: ChatRole
     let content: String
 }

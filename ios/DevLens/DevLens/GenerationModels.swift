@@ -44,7 +44,7 @@ nonisolated struct GenerationSnapshot: Identifiable, Codable {
     }
 }
 
-nonisolated struct CreateGenerationRequest: Encodable {
+nonisolated struct CreateGenerationRequest: Codable {
     let conversationID: UUID
     let requestID: UUID
     let question: String
