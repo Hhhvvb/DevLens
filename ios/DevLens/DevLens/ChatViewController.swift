@@ -26,6 +26,7 @@ final class ChatViewController:
     private let latestButton = UIButton(type: .system)
     var onSaveConversation: ((Conversation) -> Task<Void, Error>)?
     private var lastSaveAt: Date?
+    private var isPageVisible = false
 
     private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
         [weak self] cell, _, message in
@@ -131,7 +132,40 @@ final class ChatViewController:
             self.present(alert, animated: true)
         }
 
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
         renderGenerationState(viewModel.state)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+
+        isPageVisible = true
+
+        guard conversation.activeGeneration != nil,
+              !viewModel.state.isLoading else {
+            return
+        }
+
+        resumeActiveGeneration()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+
+        isPageVisible = false
+        pauseGenerationSubscription()
     }
 
     override func viewDidLayoutSubviews() {
@@ -753,7 +787,9 @@ final class ChatViewController:
     }
 
     private func resumeActiveGeneration() {
-        guard let active = conversation.activeGeneration,
+        guard isPageVisible,
+              UIApplication.shared.applicationState == .active,
+              let active = conversation.activeGeneration,
               !isPreparingGeneration else {
             return
         }
@@ -779,6 +815,12 @@ final class ChatViewController:
                 }
 
                 self.isPreparingGeneration = false
+
+                guard self.isPageVisible,
+                      UIApplication.shared.applicationState == .active else {
+                    return
+                }
+
                 self.viewModel.submit(request)
                 self.updateGenerationControls()
             } catch {
@@ -787,10 +829,48 @@ final class ChatViewController:
                 }
 
                 self.isPreparingGeneration = false
+
+                guard self.isPageVisible,
+                      UIApplication.shared.applicationState == .active else {
+                    return
+                }
+
                 self.updateReplyStatus("任务信息保存失败，尚未提交本次请求。\n" + error.localizedDescription)
                 self.updateGenerationControls()
             }
         }
+    }
+
+    private func pauseGenerationSubscription() {
+        renderTask?.cancel()
+        renderTask = nil
+
+        if let pendingState = pendingStreamingState {
+            pendingStreamingState = nil
+            renderGenerationState(pendingState)
+        } else if !messages.isEmpty {
+            persistMessages(force: true)
+        }
+
+        viewModel.disconnect()
+    }
+
+    @objc private func appDidEnterBackground() {
+        guard isPageVisible else {
+            return
+        }
+
+        pauseGenerationSubscription()
+    }
+
+    @objc private func appDidBecomeActive() {
+        guard isPageVisible,
+              conversation.activeGeneration != nil,
+              !viewModel.state.isLoading else {
+            return
+        }
+
+        resumeActiveGeneration()
     }
 }
 
