@@ -4,6 +4,10 @@ from pathlib import Path
 from uuid import UUID
 
 from generation_models import ( GenerationInput, GenerationSnapshot, GenerationState, )
+from datetime import datetime, timezone
+
+from conversation_models import ConversationMessage
+from conversation_store import ConversationStore
 
 class GenerationConflictError(Exception):
     pass
@@ -11,6 +15,7 @@ class GenerationConflictError(Exception):
 class GenerationStore:
     def __init__(self, database_path: Path):
         self.database_path = database_path
+        ConversationStore(database_path)
 
         self.database_path.parent.mkdir(
             parents=True,
@@ -63,6 +68,7 @@ class GenerationStore:
         with closing(
             sqlite3.connect(self.database_path)
         ) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 INSERT INTO generations (
@@ -95,7 +101,14 @@ class GenerationStore:
                 )
             )
 
+            self._save_conversation_messages(
+                connection,
+                snapshot,
+                task_input,
+            )
+
             connection.commit()
+
 
     def get(self, generation_id: UUID) -> GenerationSnapshot | None:
         with closing(
@@ -201,6 +214,11 @@ class GenerationStore:
                 ),
             )
 
+            self._sync_answer_message(
+                connection,
+                snapshot,
+            )
+
             connection.commit()
 
             return snapshot
@@ -261,6 +279,11 @@ class GenerationStore:
                 ),
             )
 
+            self._sync_answer_message(
+                connection,
+                current,
+            )
+
             connection.commit()
 
             return current
@@ -306,6 +329,11 @@ class GenerationStore:
                         snapshot.model_dump_json(),
                         str(snapshot.id),
                     ),
+                )
+
+                self._sync_answer_message(
+                    connection,
+                    snapshot,
                 )
 
 
@@ -357,6 +385,11 @@ class GenerationStore:
                     snapshot.model_dump_json(),
                     str(snapshot.id),
                 ),
+            )
+
+            self._sync_answer_message(
+                connection,
+                snapshot,
             )
 
             connection.commit()
@@ -412,6 +445,167 @@ class GenerationStore:
                 ),
             )
 
+            self._sync_answer_message(
+                connection,
+                current,
+            )
+
             connection.commit()
 
             return current
+
+    def _save_conversation_messages(
+        self,
+        connection: sqlite3.Connection,
+        snapshot: GenerationSnapshot,
+        task_input: GenerationInput,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        timestamp = now.isoformat()
+        conversation_id = str(snapshot.conversation_id)
+
+        connection.execute(
+            """
+            INSERT INTO conversations (
+                id, title, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            """,
+            (
+                conversation_id,
+                task_input.question[:20],
+                timestamp,
+                timestamp,
+            ),
+        )
+
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(sequence), 0)
+            FROM conversation_messages
+            WHERE conversation_id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+
+        next_sequence = row[0] + 1
+
+        question = ConversationMessage(
+            id=snapshot.question_message_id,
+            conversation_id = snapshot.conversation_id,
+            sequence=next_sequence,
+            role="user",
+            text=task_input.question,
+            created_at=now,
+        )
+
+        answer = ConversationMessage(
+            id=snapshot.answer_message_id,
+            conversation_id=snapshot.conversation_id,
+            sequence=next_sequence+1,
+            role="assistant",
+            text="",
+            status_text="正在排队...",
+            created_at=now,
+        )
+
+        for message in (question, answer):
+            connection.execute(
+                """
+                INSERT INTO conversation_messages (
+                    id,
+                    conversation_id,
+                    sequence,
+                    message_json
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    str(message.id),
+                    conversation_id,
+                    message.sequence,
+                    message.model_dump_json(),
+                ),
+            )
+
+        connection.execute(
+            """
+            UPDATE conversations
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (timestamp, conversation_id),
+        )
+
+    def _sync_answer_message(
+        self,
+        connection: sqlite3.Connection,
+        snapshot: GenerationSnapshot,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT message_json
+            FROM conversation_messages
+            WHERE id = ? AND conversation_id = ?
+            """,
+            (
+                str(snapshot.answer_message_id),
+                str(snapshot.conversation_id),
+            ),
+        ).fetchone()
+
+        if row is None:
+            return
+
+        message = ConversationMessage.model_validate_json(
+            row[0]
+        )
+
+        message.text = snapshot.answer
+        message.source_chunks = snapshot.source_chunks
+
+        if snapshot.state == GenerationState.running:
+            message.status_text = (
+                "正在思考..." if not snapshot.answer else None
+            )
+        else:
+            status_by_state = {
+                GenerationState.queued: "正在排队...",
+                GenerationState.stop_requested: "正在停止...",
+                GenerationState.completed: None,
+                GenerationState.cancelled: "已停止生成。",
+                GenerationState.failed: (
+                    snapshot.error_message or "生成失败。"
+                ),
+                GenerationState.interrupted: (
+                    snapshot.error_message or "生成已中断。"
+                ),
+            }
+
+            message.status_text = status_by_state[snapshot.state]
+
+        connection.execute(
+            """
+            UPDATE conversation_messages
+            SET message_json = ?
+            WHERE id = ? AND conversation_id = ?
+            """,
+            (
+                message.model_dump_json(),
+                str(message.id),
+                str(message.conversation_id),
+            ),
+        )
+
+        connection.execute(
+            """
+            UPDATE conversations
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                str(snapshot.conversation_id),
+            ),
+        )
