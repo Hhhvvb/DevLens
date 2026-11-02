@@ -228,3 +228,6 @@ xcuserdata/
 
 # 本地源码向量索引
 /backend/.chroma/
+
+# 服务端本地业务数据库
+/backend/.data/

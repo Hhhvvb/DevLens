@@ -1,16 +1,16 @@
 import chromadb
 
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from build_index import INDEX_PATH, COLLECTION_NAME
+from build_index import COLLECTION_NAME
 from repo_context import CodeChunk, search_code_chunks
 from hybrid_retrieval import fuse_rankings
 
 class CodeRetriever:
     def __init__(self):
-        if not INDEX_PATH.exists():
-            raise RuntimeError("索引目录不存在，请先运行 build_index.py 建立索引。")
-
-        self.client = chromadb.PersistentClient(path=str(INDEX_PATH))
+        self.client = chromadb.HttpClient(
+            host="127.0.0.1",
+            port=8001,
+        )
 
         self.collection = self.client.get_collection(name=COLLECTION_NAME, embedding_function=None)
 

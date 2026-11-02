@@ -25,7 +25,7 @@ class SourceDetailsTests(unittest.TestCase):
             ),
         ]
 
-        async def fake_stream(question, selected_chunks):
+        async def fake_stream(question, selected_chunks, history):
             yield "测试回答"
 
         with (
@@ -61,6 +61,7 @@ class SourceDetailsTests(unittest.TestCase):
         stream_mock.assert_called_once_with(
             "解释这段代码",
             chunks,
+            [],
         )
 
         events = []

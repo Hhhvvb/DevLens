@@ -37,7 +37,10 @@ final class QuestionViewModel {
         }
     }
 
-    func submit(_ rawQuestion: String) {
+    func submit(
+        _ rawQuestion: String,
+        history: [HistoryMessage] = []
+    ) {
         guard !state.isLoading else {
             return
         }
@@ -71,7 +74,8 @@ final class QuestionViewModel {
 
             do {
                 let response = try await self.apiClient.sendQuestion(
-                    question
+                    question,
+                    history: history
                 ) { answer in
                     guard !Task.isCancelled else { return }
 
