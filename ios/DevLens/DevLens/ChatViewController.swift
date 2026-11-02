@@ -260,7 +260,8 @@ final class ChatViewController:
 
         let history = messages
             .filter {
-                !$0.text.trimmingCharacters(
+                $0.isExcludedFromContext != true
+                && !$0.text.trimmingCharacters(
                     in: .whitespacesAndNewlines
                 ).isEmpty
             }
@@ -752,6 +753,28 @@ final class ChatViewController:
 
         case .connectionFailed(_, let message):
             updateReplyStatus("接收连接已断开，任务状态需要重新连接确认。\n\(message)")
+
+        case .submissionRejected(let message):
+            if let active = conversation.activeGeneration {
+                let rejectedIDs = [
+                    active.questionMessageID,
+                    active.answerMessageID
+                ]
+
+                for index in messages.indices {
+                    if rejectedIDs.contains(messages[index].id) {
+                        messages[index].isExcludedFromContext = true
+                    }
+                }
+            }
+
+            conversation.activeGeneration = nil
+
+            updateReplyStatus(
+                "请求未提交成功。\n\(message)"
+            )
+
+            activeReplyID = nil
         }
     }
 

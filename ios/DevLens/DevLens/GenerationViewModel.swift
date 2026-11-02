@@ -14,13 +14,14 @@ nonisolated enum GenerationViewState {
         request: CreateGenerationRequest,
         message: String
     )
+    case submissionRejected(message: String)
 
     var isLoading: Bool {
         switch self {
         case .submitting, .connecting, .receiving:
             return true
 
-        case .idle, .finished, .connectionFailed, .submissionFailed:
+        case .idle, .finished, .connectionFailed, .submissionFailed, .submissionRejected:
             return false
         }
     }
@@ -179,7 +180,13 @@ final class GenerationViewModel {
                     return
                 }
 
-                if isCreating, let request {
+                if isCreating,
+                   let apiError = error as? APIError,
+                   apiError.statusCode == 422 {
+                    self.state = .submissionRejected(
+                        message: error.localizedDescription
+                    )
+                } else if isCreating, let request {
                     self.state = .submissionFailed(
                         request: request,
                         message: error.localizedDescription

@@ -9,6 +9,7 @@ nonisolated enum APIError: LocalizedError {
     case incompleteStream
     case serverError(String)
     case subscriptionInterrupted
+    case httpFailure(statusCode: Int, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -50,6 +51,21 @@ nonisolated enum APIError: LocalizedError {
             return message
         case .subscriptionInterrupted:
             return "订阅连接已结束，任务可能仍在生成，请重新连接查看。"
+        case .httpFailure(_, let message):
+            return message
+        }
+    }
+
+    var statusCode: Int? {
+        switch self {
+        case .httpError(let code):
+            return code
+
+        case .httpFailure(let code, _):
+            return code
+
+        default:
+            return nil
         }
     }
 }
@@ -235,14 +251,29 @@ final class APIClient: QuestionService, GenerationService {
             }
 
             guard (200..<300).contains(http.statusCode) else {
-                if let failure = try? JSONDecoder().decode(
+                let failure = try? JSONDecoder().decode(
                     APIErrorResponse.self,
                     from: data
-                ), !failure.detail.isEmpty {
-                    throw APIError.serverError(failure.detail)
+                )
+
+                let message: String
+
+                if let detail = failure?.detail,
+                   !detail.isEmpty {
+                    message = detail
+                } else if http.statusCode == 422 {
+                    message = """
+                    输入未通过校验：问题最多 3000 个字符；\
+                    历史过长时，请新建会话后继续。
+                    """
+                } else {
+                    message = "服务器请求失败，状态码：\(http.statusCode)"
                 }
 
-                throw APIError.httpError(http.statusCode)
+                throw APIError.httpFailure(
+                    statusCode: http.statusCode,
+                    message: message
+                )
             }
 
             guard http.mimeType?.lowercased() == "application/json" else {

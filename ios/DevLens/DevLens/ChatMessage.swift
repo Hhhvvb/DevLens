@@ -11,6 +11,7 @@ nonisolated struct ChatMessage: Identifiable, Codable {
     var text: String
     var sourceChunks: [SourceChunk]
     var statusText: String?
+    var isExcludedFromContext: Bool?
 
     init(
         id: UUID = UUID(),

@@ -39,10 +39,18 @@
 - 来源通过独立按钮进入，正文长按支持复制消息
 - 加载、停止和错误提示独立于 Markdown 正文，避免被未闭合代码块吞入
 - Mock 服务覆盖正常回答、请求失败和流式中断场景
+- 本地会话列表与聊天记录持久化
+- 多轮问答传递历史消息，并结合历史问题辅助源码检索
+- 服务端持久生成任务，支持幂等创建、查询和停止
+- SSE 返回完整任务快照，重连时获取最新结果
+- 页面重入、前后台切换及 App 重启后恢复原任务
 
-当前支持基于混合检索与重排的单次流式问答。
-聊天页面可以展示本次运行中的多条问答，但每次请求只发送当前问题，
-尚未实现模型多轮记忆或聊天记录持久化。
+当前支持基于混合检索与重排的多轮代码问答。
+会话历史保存在 iOS 本地，生成任务及进度保存在服务端 SQLite。
+离开页面或关闭 App 不会主动停止服务端生成，重新进入后获取最新快照。
+
+历史消息目前有数量与长度限制，尚未实现历史摘要。
+达到限制时会提示新建会话。
 目前支持常用 Markdown 文本结构，尚未实现表格渲染和链接点击跳转。
 
 ## 当前代码库问答范围
@@ -78,11 +86,11 @@
 没有提供任何片段时，回答函数直接返回说明，不调用 AI。
 
 当前仍可能发生漏检、排序不准确和引用错误。
-尚未实现模型多轮记忆或聊天记录持久化。
 
 建立索引时需要保留上述文件及仓库目录结构。
-修改被索引的源码后，应停止服务或查询程序，
-重新运行 build_index.py，再启动服务。
+修改被索引的源码后，保持 Chroma 运行，
+停止 API、worker 和查询程序，重新运行 build_index.py，
+然后重新启动 API 和 worker。
 本地索引目录已加入 Git 忽略规则。
 
 ## 后端测试
@@ -105,6 +113,10 @@ python -m unittest discover -s tests -v
 | POST | /v1/echo | 问题回传与输入校验 |
 | POST | /v1/ask | AI 问答 |
 | POST | /v1/ask/stream | SSE 流式 AI 问答 |
+| POST | /v1/generations | 幂等创建生成任务 |
+| GET | /v1/generations/{id} | 查询任务最新快照 |
+| POST | /v1/generations/{id}/stop | 请求停止生成 |
+| GET | /v1/generations/{id}/events | 订阅任务完整快照 |
 
 AI 问答请求：
 
@@ -122,6 +134,18 @@ AI 问答请求：
   `source_chunks` 源码片段数组。每个片段包含 `path`、`start_line`、
   `end_line` 和 `content`。
 - `error`：携带 `message`，表示生成失败。
+
+当前 iOS 聊天页面使用 `/v1/generations` 任务接口。
+
+创建请求包含 `conversation_id`、`request_id`、`question` 和
+`history`。提交结果不确定时，使用相同 request_id 和原请求重试，
+避免重复创建任务。
+
+任务订阅使用 `snapshot` 事件，每次携带完整回答、来源、状态和版本。
+客户端替换当前回答，不把完整快照作为 delta 追加。
+每次重连直接返回最新快照；终态快照发送后关闭订阅。
+
+断开订阅不会停止任务；停止生成需要调用独立停止接口。
 
 流开始前的输入校验失败返回 HTTP 422，缺少服务端密钥返回 HTTP 503。
 流开始后的已处理错误通过 `error` 事件返回，不再发送 `done`。
@@ -145,11 +169,27 @@ DEEPSEEK_API_KEY=替换为你的真实密钥
 
 `.env` 已加入 Git 忽略规则，密钥只由后端使用。
 
-首次启动前，先建立源码索引：
+运行时需要三个独立进程：Chroma、API 和生成 worker。
+以下命令均在 backend 目录、已激活虚拟环境的终端执行。
+
+### 终端一：启动 Chroma
+
+```bash
+chroma run --path .chroma --host 127.0.0.1 --port 8001
+```
+
+保持这个终端运行。
+
+### 首次建立或更新索引
+
+Chroma 启动后，在另一个终端执行：
 
 ```bash
 python build_index.py
 ```
+
+该命令完成后会退出。修改被索引源码后，需要重新建立索引。
+更新索引前，应停止使用该索引的 API、worker 和查询程序。
 
 可以单独验证检索，不调用 DeepSeek：
 
@@ -157,16 +197,32 @@ python build_index.py
 python query_index.py
 ```
 
-服务启动时会加载两个检索模型，请等待
-`Application startup complete` 后再从 App 提问。
-
-启动开发服务器：
+### 终端二：启动 API
 
 ```bash
 python -m uvicorn main:app --reload --env-file .env --host 0.0.0.0 --port 8000
 ```
 
-后端运行期间需要保持终端开启。
+等待 `Application startup complete` 后再使用 App。
+
+### 终端三：启动生成 worker
+
+```bash
+python generation_worker.py
+```
+
+等待“后台执行器已就绪”。
+
+API 接收创建、查询、订阅和停止请求；worker 负责领取任务、
+检索源码、调用 AI 并保存生成进度。
+只启动 API 而未启动 worker，新建任务会一直排队。
+
+同一个任务数据库只运行一个 worker。
+API 的 `--reload` 不会自动重启独立 worker；
+修改 worker 代码后需要手动重启。
+
+服务端任务数据库位于 backend/.data/generations.sqlite3。
+Chroma、API 和 worker 运行期间分别保持终端开启。
 
 - 健康检查：http://127.0.0.1:8000/health
 - 接口文档：http://127.0.0.1:8000/docs
@@ -193,7 +249,8 @@ python -m uvicorn main:app --reload --env-file .env --host 0.0.0.0 --port 8000
 `0.0.0.0` 是后端监听地址，不是 App 请求地址。
 
 聊天页面、消息输入区、来源列表和源码详情均保留 `#Preview`。
-聊天页面预览使用 Mock 服务，来源页面预览使用示例源码数据。
+聊天页面和来源页面预览使用示例数据。
+MockQuestionService 保留用于旧问答流程的模拟场景。
 
 ## 命令行验证模型
 
