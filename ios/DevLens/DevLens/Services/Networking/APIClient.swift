@@ -71,7 +71,11 @@ nonisolated enum APIError: LocalizedError {
 }
 
 @MainActor
-final class APIClient: QuestionService, GenerationService, ConversationService {
+final class APIClient:
+    QuestionService,
+    GenerationService,
+    ConversationService,
+    AuthService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -463,5 +467,25 @@ final class APIClient: QuestionService, GenerationService, ConversationService {
             path: "/v1/conversations/\(conversationID.uuidString)/active-generation",
             method: "GET"
         )
+    }
+
+    func login(
+        _ request: LoginRequest
+    ) async throws -> LoginResponse {
+        let body = try JSONEncoder().encode(request)
+
+        let response: LoginResponse = try await sendJSONRequest(
+            path: "/v1/auth/login",
+            method: "POST",
+            body: body
+        )
+
+        guard !response.accessToken.isEmpty,
+              !response.refreshToken.isEmpty,
+              response.expiresIn > 0 else {
+            throw APIError.invalidResponse
+        }
+
+        return response
     }
 }
