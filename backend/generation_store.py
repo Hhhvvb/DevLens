@@ -609,3 +609,29 @@ class GenerationStore:
                 str(snapshot.conversation_id),
             ),
         )
+
+    def get_active(
+        self,
+        conversation_id: UUID,
+    ) -> GenerationSnapshot | None:
+        with closing(
+            sqlite3.connect(self.database_path)
+        ) as connection:
+            row = connection.execute(
+                """
+                SELECT snapshot_json
+                FROM generations
+                WHERE conversation_id = ?
+                AND state IN (
+                    'queued',
+                    'running',
+                    'stop_requested'
+                )
+                """,
+                (str(conversation_id),),
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            return GenerationSnapshot.model_validate_json(row[0])

@@ -71,7 +71,7 @@ nonisolated enum APIError: LocalizedError {
 }
 
 @MainActor
-final class APIClient: QuestionService, GenerationService {
+final class APIClient: QuestionService, GenerationService, ConversationService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -83,7 +83,7 @@ final class APIClient: QuestionService, GenerationService {
     ) async throws -> GenerationSnapshot {
         let body = try JSONEncoder().encode(input)
 
-        return try await sendGenerationRequest(
+        return try await sendJSONRequest(
             path: "/v1/generations",
             method: "POST",
             body: body
@@ -93,7 +93,7 @@ final class APIClient: QuestionService, GenerationService {
     func getGeneration(
         id: UUID
     ) async throws -> GenerationSnapshot {
-        return try await sendGenerationRequest(
+        return try await sendJSONRequest(
             path: "/v1/generations/\(id.uuidString)",
             method: "GET"
         )
@@ -102,7 +102,7 @@ final class APIClient: QuestionService, GenerationService {
     func stopGeneration(
         id: UUID
     ) async throws -> GenerationSnapshot {
-        return try await sendGenerationRequest(
+        return try await sendJSONRequest(
             path: "/v1/generations/\(id.uuidString)/stop",
             method: "POST"
         )
@@ -211,11 +211,11 @@ final class APIClient: QuestionService, GenerationService {
         }
     }
 
-    private func sendGenerationRequest(
+    private func sendJSONRequest<Response: Decodable>(
         path: String,
         method: String,
         body: Data? = nil
-    ) async throws -> GenerationSnapshot {
+    ) async throws -> Response {
         guard let url = URL(
             string: "\(baseURL)\(path)"
         ) else {
@@ -262,10 +262,7 @@ final class APIClient: QuestionService, GenerationService {
                    !detail.isEmpty {
                     message = detail
                 } else if http.statusCode == 422 {
-                    message = """
-                    输入未通过校验：问题最多 3000 个字符；\
-                    历史过长时，请新建会话后继续。
-                    """
+                    message = "输入未通过校验，请检查字段内容及长度。"
                 } else {
                     message = "服务器请求失败，状态码：\(http.statusCode)"
                 }
@@ -280,8 +277,8 @@ final class APIClient: QuestionService, GenerationService {
                 throw APIError.invalidResponse
             }
 
-            return try JSONDecoder().decode(
-                GenerationSnapshot.self,
+            return try makeJSONDecoder().decode(
+                Response.self,
                 from: data
             )
         } catch let error as URLError {
@@ -395,5 +392,76 @@ final class APIClient: QuestionService, GenerationService {
             throw APIError.invalidResponse
         }
 
+    }
+
+    private func makeJSONDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [
+                .withInternetDateTime,
+                .withFractionalSeconds
+            ]
+
+            if let date = formatter.date(from: value) {
+                return date
+            }
+
+            formatter.formatOptions = [
+                .withInternetDateTime
+            ]
+
+            if let date = formatter.date(from: value) {
+                return date
+            }
+
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "无法解析服务器时间：\(value)"
+            )
+        }
+
+        return decoder
+    }
+
+    func createConversation(
+        _ input: CreateConversationRequest
+    ) async throws -> ConversationSummary {
+        let body = try JSONEncoder().encode(input)
+
+        return try await sendJSONRequest(
+            path: "/v1/conversations",
+            method: "POST",
+            body: body
+        )
+    }
+
+    func listConversations() async throws -> [ConversationSummary] {
+        return try await sendJSONRequest(
+            path: "/v1/conversations",
+            method: "GET"
+        )
+    }
+
+    func listMessages(
+        conversationID: UUID
+    ) async throws -> [ConversationMessage] {
+        return try await sendJSONRequest(
+            path: "/v1/conversations/\(conversationID.uuidString)/messages",
+            method: "GET"
+        )
+    }
+
+    func getActiveGeneration(
+        conversationID: UUID
+    ) async throws -> ConversationGenerationRecovery? {
+        return try await sendJSONRequest(
+            path: "/v1/conversations/\(conversationID.uuidString)/active-generation",
+            method: "GET"
+        )
     }
 }

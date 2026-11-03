@@ -74,6 +74,10 @@ class CreateGenerationRequest(AskRequest):
     conversation_id: UUID
     request_id: UUID
 
+class ConversationGenerationRecovery(BaseModel):
+    snapshot: GenerationSnapshot
+    request: CreateGenerationRequest
+
 class AskResponse(BaseModel):
     question: str
     answer: str
@@ -534,4 +538,62 @@ async def list_conversation_messages(
     return await run_in_threadpool(
         store.list_messages,
         conversation_id,
+    )
+
+@app.get(
+    "/v1/conversations/{conversation_id}/active-generation",
+    response_model=ConversationGenerationRecovery | None,
+)
+async def get_conversation_active_generation(
+    conversation_id: UUID,
+    http_request: Request,
+):
+    conversation_store = (http_request.app.state.conversation_store)
+    generation_store = (http_request.app.state.generation_store)
+    conversation = await run_in_threadpool(
+        conversation_store.get,
+        conversation_id,
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在",
+        )
+
+    snapshot = await run_in_threadpool(
+        generation_store.get_active,
+        conversation_id,
+    )
+
+    if snapshot is None:
+        return None
+
+    task_input = await run_in_threadpool(
+        generation_store.get_input,
+        snapshot.id,
+    )
+
+    if task_input is None:
+        raise HTTPException(
+            status_code=500,
+            detail="生成任务输入数据缺失",
+        )
+
+    history = [
+        HistoryMessage(
+            role="user" if role == "human" else "assistant",
+            content=content,
+        )
+        for role, content in task_input.history
+    ]
+
+    return ConversationGenerationRecovery(
+        snapshot=snapshot,
+        request=CreateGenerationRequest(
+            conversation_id=conversation_id,
+            request_id=snapshot.id,
+            question=task_input.quest,
+            history=history,
+        )
     )

@@ -5,6 +5,10 @@ final class ConversationListViewController: UITableViewController {
     private var store: ConversationStore?
     private var isCreating = false
     private var saveTask: Task<Void, Never>?
+    private let conversationService: any ConversationService = APIClient()
+    private var pendingConversation: Conversation?
+    private var serverOnlyConversationIDs: Set<UUID> = []
+    private var isOpeningConversation = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -27,6 +31,7 @@ final class ConversationListViewController: UITableViewController {
 
         Task { [weak self] in
             await self?.loadConversations()
+            await self?.loadServerConversations()
         }
     }
 
@@ -88,20 +93,53 @@ final class ConversationListViewController: UITableViewController {
             navigationItem.rightBarButtonItem?.isEnabled = true
         }
 
-        let conversation = Conversation()
+        let pending = pendingConversation ?? Conversation()
+        pendingConversation = pending
 
         do {
+            let summary = try await conversationService.createConversation(
+                CreateConversationRequest(
+                    id: pending.id,
+                    title: pending.title
+                )
+            )
+
+            guard summary.id == pending.id else {
+                throw APIError.invalidResponse
+            }
+
+            var conversation = Conversation(
+                id: summary.id,
+                title: summary.title,
+                createdAt: summary.createdAt
+            )
+
+            conversation.updatedAt = summary.updatedAt
+
             try await store.upsert(conversation)
 
-            conversations.insert(conversation, at: 0)
+            conversations.removeAll {
+                $0.id == conversation.id
+            }
+            conversations.append(conversation)
+            conversations.sort {
+                $0.updatedAt > $1.updatedAt
+            }
+
+            pendingConversation = nil
+
             tableView.backgroundView = nil
             tableView.reloadData()
 
-            openConversation(conversation)
+            showConversation(conversation)
         } catch {
             let alert = UIAlertController(
-                title: "创建会话失败",
-                message: error.localizedDescription,
+                title: "创建会话未完成",
+                message: """
+                \(error.localizedDescription)
+
+                请稍后再次点击“新建”重试。
+                """,
                 preferredStyle: .alert
             )
 
@@ -166,7 +204,7 @@ final class ConversationListViewController: UITableViewController {
         openConversation(conversation)
     }
 
-    private func openConversation(_ conversation: Conversation) {
+    private func showConversation(_ conversation: Conversation) {
         let controller = ChatViewController(
             conversation: conversation,
             apiClient: APIClient()
@@ -221,5 +259,170 @@ final class ConversationListViewController: UITableViewController {
         }
 
         return operation
+    }
+
+    private func loadServerMessages(
+        conversationID: UUID
+    ) async throws -> [ChatMessage] {
+        let remoteMessages = try await conversationService.listMessages(
+            conversationID: conversationID
+        )
+
+        guard remoteMessages.allSatisfy({
+            $0.conversationID == conversationID
+        }) else {
+            throw APIError.invalidResponse
+        }
+
+        let sortedMessages = remoteMessages.sorted {
+            $0.sequence < $1.sequence
+        }
+
+        return sortedMessages.map { message in
+            message.toChatMessage()
+        }
+    }
+
+    private func loadServerConversations() async {
+        guard store != nil else {
+            return
+        }
+
+        tableView.isUserInteractionEnabled = false
+        navigationItem.rightBarButtonItem?.isEnabled = false
+
+        defer {
+            tableView.isUserInteractionEnabled = true
+            navigationItem.rightBarButtonItem?.isEnabled = !isCreating && !isOpeningConversation
+        }
+
+        do {
+            let summaries = try await conversationService.listConversations()
+
+            for summary in summaries {
+                let alreadyExists = conversations.contains {
+                    $0.id == summary.id
+                }
+
+                guard !alreadyExists else {
+                    continue
+                }
+
+                var conversation = Conversation(
+                    id: summary.id,
+                    title: summary.title,
+                    createdAt: summary.createdAt
+                )
+
+                conversation.updatedAt = summary.updatedAt
+
+                conversations.append(conversation)
+                serverOnlyConversationIDs.insert(summary.id)
+            }
+
+            conversations.sort {
+                $0.updatedAt > $1.updatedAt
+            }
+
+            tableView.reloadData()
+
+            if conversations.isEmpty {
+                showPlaceholder("还没有会话")
+            } else {
+                tableView.backgroundView = nil
+            }
+        } catch {
+            let alert = UIAlertController(
+                title: "无法读取服务器会话",
+                message: error.localizedDescription,
+                preferredStyle: .alert
+            )
+
+            alert.addAction(
+                UIAlertAction(title: "确定", style: .default)
+            )
+
+            present(alert, animated: true)
+        }
+    }
+
+    private func openConversation(_ conversation: Conversation) {
+        guard !isOpeningConversation else {
+            return
+        }
+
+        guard serverOnlyConversationIDs.contains(conversation.id) else {
+            showConversation(conversation)
+            return
+        }
+
+        isOpeningConversation = true
+        tableView.isUserInteractionEnabled = false
+        navigationItem.rightBarButtonItem?.isEnabled = false
+
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            defer {
+                self.isOpeningConversation = false
+                self.tableView.isUserInteractionEnabled = true
+                self.navigationItem.rightBarButtonItem?.isEnabled = !self.isCreating
+            }
+
+            do {
+                let recovery = try await self.conversationService.getActiveGeneration(conversationID: conversation.id)
+
+                let messages = try await self.loadServerMessages(
+                    conversationID: conversation.id
+                )
+
+                var restored = conversation
+                restored.messages = messages
+
+                if let recovery {
+                    let snapshot = recovery.snapshot
+
+                    guard snapshot.conversationID == conversation.id,
+                          recovery.request.conversationID == conversation.id,
+                          recovery.request.requestID == snapshot.id,
+                          messages.contains(where: {
+                              $0.id == snapshot.questionMessageID && $0.role == .user
+                          }),
+                          messages.contains(where: {
+                              $0.id == snapshot.answerMessageID && $0.role == .assistant
+                          }) else {
+                        throw APIError.invalidResponse
+                    }
+
+                    restored.activeGeneration = ActiveGeneration(
+                        request: recovery.request,
+                        questionMessageID: snapshot.questionMessageID,
+                        answerMessageID: snapshot.answerMessageID,
+                        isConfirmed: true
+                    )
+                }
+
+                let operation = self.saveConversation(restored)
+                try await operation.value
+
+                self.serverOnlyConversationIDs.remove(conversation.id)
+
+                self.showConversation(restored)
+            } catch {
+                let alert = UIAlertController(
+                    title: "无法打开会话",
+                    message: error.localizedDescription,
+                    preferredStyle: .alert
+                )
+
+                alert.addAction(
+                    UIAlertAction(title: "确定", style: .default)
+                )
+
+                self.present(alert, animated: true)
+            }
+        }
     }
 }
