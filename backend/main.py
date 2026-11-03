@@ -593,7 +593,7 @@ async def get_conversation_active_generation(
         request=CreateGenerationRequest(
             conversation_id=conversation_id,
             request_id=snapshot.id,
-            question=task_input.quest,
+            question=task_input.question,
             history=history,
         )
     )

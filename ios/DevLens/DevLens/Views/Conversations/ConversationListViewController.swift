@@ -94,7 +94,10 @@ final class ConversationListViewController: UITableViewController {
     }
 
     private func createConversation() async {
-        guard let store, !isCreating else {
+        guard let store,
+              !isCreating,
+              !isOpeningConversation,
+              !isLoadingServerConversations else {
             return
         }
 
@@ -103,7 +106,7 @@ final class ConversationListViewController: UITableViewController {
 
         defer {
             isCreating = false
-            navigationItem.rightBarButtonItem?.isEnabled = true
+            navigationItem.rightBarButtonItem?.isEnabled = !isOpeningConversation && !isLoadingServerConversations
         }
 
         let pending = pendingConversation ?? Conversation()
@@ -121,13 +124,31 @@ final class ConversationListViewController: UITableViewController {
                 throw APIError.invalidResponse
             }
 
-            var conversation = Conversation(
-                id: summary.id,
-                title: summary.title,
-                createdAt: summary.createdAt
-            )
+            if serverOnlyConversationIDs.contains(summary.id),
+               let existing = conversations.first(where: {
+                   $0.id == summary.id
+               }) {
+                pendingConversation = nil
+                openConversation(existing)
+                return
+            }
 
-            conversation.updatedAt = summary.updatedAt
+            let conversation: Conversation
+
+            if let existing = conversations.first(where: {
+                $0.id == summary.id
+            }) {
+                conversation = existing
+            } else {
+                var created = Conversation(
+                    id: summary.id,
+                    title: summary.title,
+                    createdAt: summary.createdAt
+                )
+
+                created.updatedAt = summary.updatedAt
+                conversation = created
+            }
 
             try await store.upsert(conversation)
 
@@ -144,7 +165,7 @@ final class ConversationListViewController: UITableViewController {
             tableView.backgroundView = nil
             tableView.reloadData()
 
-            showConversation(conversation)
+            openConversation(conversation)
         } catch {
             let alert = UIAlertController(
                 title: "创建会话未完成",
@@ -434,6 +455,10 @@ final class ConversationListViewController: UITableViewController {
                 try await operation.value
 
                 self.serverOnlyConversationIDs.remove(conversation.id)
+
+                if self.pendingConversation?.id == restored.id {
+                    self.pendingConversation = nil
+                }
 
                 self.showConversation(restored)
             } catch {
