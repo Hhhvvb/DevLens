@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 SOURCE_FILES = (
     "backend/main.py",
-    "ios/DevLens/DevLens/APIClient.swift",
-    "ios/DevLens/DevLens/QuestionViewModel.swift",
+    "ios/DevLens/DevLens/Services/Networking/APIClient.swift",
+    "ios/DevLens/DevLens/ViewModels/QuestionViewModel.swift",
 )
 
 @dataclass(frozen=True)

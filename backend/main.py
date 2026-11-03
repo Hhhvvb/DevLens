@@ -18,6 +18,8 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from generation_models import ( GenerationInput, GenerationSnapshot, GenerationState, )
 from generation_store import ( GenerationConflictError, GenerationStore, )
+from conversation_models import ( CreateConversationRequest, ConversationSummary, ConversationMessage, )
+from conversation_store import ConversationStore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,6 +34,11 @@ async def lifespan(app: FastAPI):
         database_path,
     )
 
+    app.state.conversation_store = await run_in_threadpool(
+        ConversationStore,
+        database_path,
+    )
+
     app.state.retriever = await run_in_threadpool(
         CodeRetriever
     )
@@ -42,6 +49,7 @@ async def lifespan(app: FastAPI):
     finally:
         del app.state.retriever
         del app.state.generation_store
+        del app.state.conversation_store
 
 app = FastAPI(
     title="DevLens",
@@ -65,6 +73,10 @@ class AskRequest(BaseModel):
 class CreateGenerationRequest(AskRequest):
     conversation_id: UUID
     request_id: UUID
+
+class ConversationGenerationRecovery(BaseModel):
+    snapshot: GenerationSnapshot
+    request: CreateGenerationRequest
 
 class AskResponse(BaseModel):
     question: str
@@ -446,4 +458,142 @@ async def subscribe_generation(
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+@app.post(
+    "/v1/conversations",
+    response_model=ConversationSummary,
+)
+async def create_conversation(
+    request: CreateConversationRequest,
+    http_request: Request,
+):
+    store = http_request.app.state.conversation_store
+
+    try:
+        return await run_in_threadpool(
+            store.create_or_get,
+            request,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+
+@app.get(
+    "/v1/conversations",
+    response_model=list[ConversationSummary],
+)
+async def list_conversations(http_request: Request):
+    store = http_request.app.state.conversation_store
+    return await run_in_threadpool(
+        store.list_conversations,
+    )
+
+@app.get(
+    "/v1/conversations/{conversation_id}",
+    response_model=ConversationSummary,
+)
+async def get_conversation(
+    conversation_id: UUID,
+    http_request: Request,
+):
+    store = http_request.app.state.conversation_store
+
+    conversation = await run_in_threadpool(
+        store.get,
+        conversation_id,
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在",
+        )
+
+    return conversation
+
+@app.get(
+    "/v1/conversations/{conversation_id}/messages",
+    response_model=list[ConversationMessage],
+)
+async def list_conversation_messages(
+    conversation_id: UUID,
+    http_request: Request,
+):
+    store = http_request.app.state.conversation_store
+
+    conversation = await run_in_threadpool(
+        store.get,
+        conversation_id,
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在",
+        )
+
+    return await run_in_threadpool(
+        store.list_messages,
+        conversation_id,
+    )
+
+@app.get(
+    "/v1/conversations/{conversation_id}/active-generation",
+    response_model=ConversationGenerationRecovery | None,
+)
+async def get_conversation_active_generation(
+    conversation_id: UUID,
+    http_request: Request,
+):
+    conversation_store = (http_request.app.state.conversation_store)
+    generation_store = (http_request.app.state.generation_store)
+    conversation = await run_in_threadpool(
+        conversation_store.get,
+        conversation_id,
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在",
+        )
+
+    snapshot = await run_in_threadpool(
+        generation_store.get_active,
+        conversation_id,
+    )
+
+    if snapshot is None:
+        return None
+
+    task_input = await run_in_threadpool(
+        generation_store.get_input,
+        snapshot.id,
+    )
+
+    if task_input is None:
+        raise HTTPException(
+            status_code=500,
+            detail="生成任务输入数据缺失",
+        )
+
+    history = [
+        HistoryMessage(
+            role="user" if role == "human" else "assistant",
+            content=content,
+        )
+        for role, content in task_input.history
+    ]
+
+    return ConversationGenerationRecovery(
+        snapshot=snapshot,
+        request=CreateGenerationRequest(
+            conversation_id=conversation_id,
+            request_id=snapshot.id,
+            question=task_input.question,
+            history=history,
+        )
     )
