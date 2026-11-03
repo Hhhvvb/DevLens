@@ -58,8 +58,8 @@
 当前索引覆盖以下三份源码：
 
 - backend/main.py
-- ios/DevLens/DevLens/APIClient.swift
-- ios/DevLens/DevLens/QuestionViewModel.swift
+- ios/DevLens/DevLens/Services/Networking/APIClient.swift
+- ios/DevLens/DevLens/ViewModels/QuestionViewModel.swift
 
 源码按最多 40 行切片，相邻片段重叠 8 行，保留文件路径与原始行号。
 使用 intfloat/multilingual-e5-small 生成向量，

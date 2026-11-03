@@ -9,12 +9,25 @@ final class ConversationListViewController: UITableViewController {
     private var pendingConversation: Conversation?
     private var serverOnlyConversationIDs: Set<UUID> = []
     private var isOpeningConversation = false
+    private var isLoadingServerConversations = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
         title = "会话"
         tableView.backgroundColor = .systemBackground
+
+        let refresh = UIRefreshControl()
+
+        refresh.addTarget(
+            self,
+            action: #selector(refreshServerList),
+            for: .valueChanged
+        )
+
+        refreshControl = refresh
+
+        tableView.alwaysBounceVertical = true
 
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "新建",
@@ -284,16 +297,29 @@ final class ConversationListViewController: UITableViewController {
     }
 
     private func loadServerConversations() async {
-        guard store != nil else {
+        guard store != nil,
+              !isCreating,
+              !isOpeningConversation else {
+            refreshControl?.endRefreshing()
             return
         }
+
+        guard !isLoadingServerConversations else {
+            return
+        }
+
+        isLoadingServerConversations = true
 
         tableView.isUserInteractionEnabled = false
         navigationItem.rightBarButtonItem?.isEnabled = false
 
         defer {
+            isLoadingServerConversations = false
+
             tableView.isUserInteractionEnabled = true
             navigationItem.rightBarButtonItem?.isEnabled = !isCreating && !isOpeningConversation
+
+            refreshControl?.endRefreshing()
         }
 
         do {
@@ -423,6 +449,12 @@ final class ConversationListViewController: UITableViewController {
 
                 self.present(alert, animated: true)
             }
+        }
+    }
+
+    @objc private func refreshServerList() {
+        Task { [weak self] in
+            await self?.loadServerConversations()
         }
     }
 }
