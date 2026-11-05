@@ -20,6 +20,13 @@ from generation_models import ( GenerationInput, GenerationSnapshot, GenerationS
 from generation_store import ( GenerationConflictError, GenerationStore, )
 from conversation_models import ( CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
+from user_store import UserStore
+from auth_service import AuthenticationService
+from auth_models import ( RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
+from email_service import LocalEmailService
+from email_verification_store import EmailVerificationStore
+from registration_service import RegistrationService
+from smtplib import SMTPException
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,9 +46,31 @@ async def lifespan(app: FastAPI):
         database_path,
     )
 
+    app.state.user_store = await run_in_threadpool(
+        UserStore,
+        database_path,
+    )
+
+    app.state.email_verification_store = await run_in_threadpool(
+        EmailVerificationStore,
+        database_path,
+    )
+
+    app.state.registration_service = RegistrationService(
+        user_store=app.state.user_store,
+        verification_store=app.state.email_verification_store,
+        email_service=LocalEmailService(),
+    )
+
+    app.state.auth_service = await run_in_threadpool(
+        AuthenticationService,
+        app.state.user_store,
+    )
+
     app.state.retriever = await run_in_threadpool(
         CodeRetriever
     )
+
     app.state.retrieval_lock = asyncio.Lock()
 
     try:
@@ -50,6 +79,10 @@ async def lifespan(app: FastAPI):
         del app.state.retriever
         del app.state.generation_store
         del app.state.conversation_store
+        del app.state.auth_service
+        del app.state.user_store
+        del app.state.registration_service
+        del app.state.email_verification_store
 
 app = FastAPI(
     title="DevLens",
@@ -141,6 +174,62 @@ def health():
         "service": "DevLens",
         "version": "0.1.0"
     }
+
+@app.post(
+    "/v1/auth/register",
+    response_model=RegisterResponse,
+    status_code=202,
+)
+def register(
+    request: RegisterRequest,
+    http_request: Request,
+) -> RegisterResponse:
+    service = http_request.app.state.registration_service
+
+    try:
+        service.register(request)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+    except (SMTPException, OSError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="验证邮件暂时发送失败，请稍后重新提交注册。"
+        ) from error
+
+    return RegisterResponse(
+        message=(
+            "如果该邮箱可以注册或尚未完成验证，"
+            "验证邮件将发送至该邮箱，请查收。"
+        )
+    )
+
+@app.post(
+    "/v1/auth/verify-email",
+    response_model=VerifyEmailResponse,
+    status_code=200,
+)
+def verify_email(
+    request: VerifyEmailRequest,
+    http_request: Request,
+) -> VerifyEmailResponse:
+    store = http_request.app.state.email_verification_store
+
+    verified = store.consume(
+        request.token.get_secret_value()
+    )
+
+    if not verified:
+        raise HTTPException(
+            status_code=400,
+            detail="验证信息无效、已过期或已使用，请重新申请验证邮件。",
+        )
+
+    return VerifyEmailResponse(
+        message="邮箱验证成功。",
+    )
 
 @app.get(
     "/v1/generations/{generation_id}",
