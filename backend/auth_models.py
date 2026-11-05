@@ -42,3 +42,9 @@ class VerifyEmailRequest(BaseModel):
 
 class VerifyEmailResponse(BaseModel):
     message: str
+
+class LoginResponse(BaseModel):
+    user: AuthUser
+    access_token: str = Field(repr=False)
+    refresh_token: str = Field(repr=False)
+    expires_in: int

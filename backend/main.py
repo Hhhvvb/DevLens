@@ -3,7 +3,7 @@ import json
 import asyncio
 
 from openai import APIError, APITimeoutError
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
@@ -21,12 +21,14 @@ from generation_store import ( GenerationConflictError, GenerationStore, )
 from conversation_models import ( CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
 from user_store import UserStore
-from auth_service import AuthenticationService
-from auth_models import ( RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
+from auth_service import ( AuthenticationService, EmailNotVerifiedError, InvalidCredentialsError, )
+from auth_models import ( AuthUser, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
 from email_service import LocalEmailService
 from email_verification_store import EmailVerificationStore
 from registration_service import RegistrationService
 from smtplib import SMTPException
+from session_store import SessionStore
+from auth_dependencies import get_current_user
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,6 +50,11 @@ async def lifespan(app: FastAPI):
 
     app.state.user_store = await run_in_threadpool(
         UserStore,
+        database_path,
+    )
+
+    app.state.session_store = await run_in_threadpool(
+        SessionStore,
         database_path,
     )
 
@@ -83,6 +90,7 @@ async def lifespan(app: FastAPI):
         del app.state.user_store
         del app.state.registration_service
         del app.state.email_verification_store
+        del app.state.session_store
 
 app = FastAPI(
     title="DevLens",
@@ -230,6 +238,44 @@ def verify_email(
     return VerifyEmailResponse(
         message="邮箱验证成功。",
     )
+
+@app.post(
+    "/v1/auth/login",
+    response_model=LoginResponse,
+    status_code=200,
+)
+def login(
+    request: LoginRequest,
+    http_request: Request,
+) -> LoginResponse:
+    auth_service = http_request.app.state.auth_service
+    session_store = http_request.app.state.session_store
+
+    try:
+        user = auth_service.authenticate(request)
+    except InvalidCredentialsError as error:
+        raise HTTPException(
+            status_code=401,
+            detail="邮箱或密码不正确。",
+        ) from error
+    except EmailNotVerifiedError as error:
+        raise HTTPException(
+            status_code=403,
+            detail="请先验证邮箱后再登录。",
+        ) from error
+
+    response = session_store.create(user)
+
+    return response
+
+@app.get(
+    "/v1/auth/me",
+    response_model=AuthUser,
+)
+def get_me(
+    user: AuthUser = Depends(get_current_user)
+) -> AuthUser:
+    return user
 
 @app.get(
     "/v1/generations/{generation_id}",
