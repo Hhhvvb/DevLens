@@ -27,42 +27,105 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        let loginController = LoginViewController(
+        let window = UIWindow(windowScene: windowScene)
+        self.window = window
+
+        authSession.onStateChanged = { [weak self] state in
+            self?.renderAuthState(state)
+        }
+
+        renderAuthState(authSession.state)
+
+        window.makeKeyAndVisible()
+
+        Task {
+            await authSession.restore()
+        }
+    }
+
+    private func renderAuthState(_ state: AuthSessionState) {
+        switch state {
+        case .idle, .restoring:
+            showStatus(
+                title: "DevLens",
+                message: "正在恢复登录..."
+            )
+
+        case .signedOut:
+            showLogin()
+
+        case .signedIn(let user):
+            window?.rootViewController = MainTabBarController(
+                user: user
+            )
+
+        case .failure(let message):
+            showStatus(
+                title: "恢复登录失败",
+                message: message,
+                allowsLogin: true
+            )
+        }
+    }
+
+    @objc private func showLogin() {
+        let controller = LoginViewController(
             authService: apiClient,
             authSession: authSession
         )
 
-        loginController.onLoginSucceeded = {
-            [weak loginController] response in
+        window?.rootViewController = UINavigationController(
+            rootViewController: controller
+        )
+    }
 
-            let alert = UIAlertController(
-                title: "登录成功",
-                message: "欢迎，\(response.user.nickname)",
-                preferredStyle: .alert
+    private func showStatus(
+        title: String,
+        message: String,
+        allowsLogin: Bool = false
+    ) {
+        let controller = UIViewController()
+        controller.title = title
+        controller.view.backgroundColor = .systemBackground
+
+        let label = UILabel()
+        label.text = message
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        controller.view.addSubview(label)
+
+        let safeArea = controller.view.safeAreaLayoutGuide
+
+        NSLayoutConstraint.activate([
+            label.centerYAnchor.constraint(
+                equalTo: safeArea.centerYAnchor
+            ),
+            label.leadingAnchor.constraint(
+                equalTo: safeArea.leadingAnchor,
+                constant: 24
+            ),
+            label.trailingAnchor.constraint(
+                equalTo: safeArea.trailingAnchor,
+                constant: -24
             )
+        ])
 
-            alert.addAction(
-                UIAlertAction(
-                    title: "确定",
-                    style: .default
-                )
-            )
-
-            loginController?.present(
-                alert,
-                animated: true
+        if allowsLogin {
+            controller.navigationItem.rightBarButtonItem = UIBarButtonItem(
+                title: "密码登录",
+                style: .plain,
+                target: self,
+                action: #selector(showLogin)
             )
         }
 
-        let navigationController = UINavigationController(
-            rootViewController: loginController
+        window?.rootViewController = UINavigationController(
+            rootViewController: controller
         )
-
-        let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = navigationController
-
-        self.window = window
-        window.makeKeyAndVisible()
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
