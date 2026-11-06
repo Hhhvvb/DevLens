@@ -11,17 +11,55 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
 
+    private let apiClient = APIClient()
 
-    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+    private lazy var authSession = AuthSession(
+        service: apiClient,
+        tokenStore: RefreshTokenStore()
+    )
+
+    func scene(
+        _ scene: UIScene,
+        willConnectTo session: UISceneSession,
+        options connectionOptions: UIScene.ConnectionOptions
+    ) {
         guard let windowScene = scene as? UIWindowScene else {
             return
         }
 
-        let conversationListController = ConversationListViewController(style: .insetGrouped)
+        let loginController = LoginViewController(
+            authService: apiClient,
+            authSession: authSession
+        )
+
+        loginController.onLoginSucceeded = {
+            [weak loginController] response in
+
+            let alert = UIAlertController(
+                title: "登录成功",
+                message: "欢迎，\(response.user.nickname)",
+                preferredStyle: .alert
+            )
+
+            alert.addAction(
+                UIAlertAction(
+                    title: "确定",
+                    style: .default
+                )
+            )
+
+            loginController?.present(
+                alert,
+                animated: true
+            )
+        }
+
+        let navigationController = UINavigationController(
+            rootViewController: loginController
+        )
 
         let window = UIWindow(windowScene: windowScene)
-
-        window.rootViewController = UINavigationController(rootViewController: conversationListController)
+        window.rootViewController = navigationController
 
         self.window = window
         window.makeKeyAndVisible()

@@ -22,7 +22,7 @@ from conversation_models import ( CreateConversationRequest, ConversationSummary
 from conversation_store import ConversationStore
 from user_store import UserStore
 from auth_service import ( AuthenticationService, EmailNotVerifiedError, InvalidCredentialsError, )
-from auth_models import ( AuthUser, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
+from auth_models import ( RefreshRequest, AuthUser, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
 from email_service import LocalEmailService
 from email_verification_store import EmailVerificationStore
 from registration_service import RegistrationService
@@ -265,6 +265,29 @@ def login(
         ) from error
 
     response = session_store.create(user)
+
+    return response
+
+@app.post(
+    "/v1/auth/refresh",
+    response_model=LoginResponse,
+    status_code=200,
+)
+def refresh_session(
+    request: RefreshRequest,
+    http_request: Request,
+) -> LoginResponse:
+    store = http_request.app.state.session_store
+
+    response = store.refresh(
+        request.refresh_token.get_secret_value()
+    )
+
+    if response is None:
+        raise HTTPException(
+            status_code=401,
+            detail="登录已失效，请重新登录。",
+        )
 
     return response
 

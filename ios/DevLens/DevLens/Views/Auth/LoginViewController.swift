@@ -5,15 +5,19 @@ final class LoginViewController: UIViewController {
     private let emailField = UITextField()
     private let passwordField = UITextField()
     private let loginButton = UIButton(type: .system)
-    private let viewModel = LoginViewModel()
+    private let viewModel: LoginViewModel
     private let errorLabel = UILabel()
     private let authService: any AuthService
     private var loginTask: Task<Void, Never>?
 
     var onLoginSucceeded: ((LoginResponse) -> Void)?
 
-    init(authService: any AuthService) {
+    init(
+        authService: any AuthService,
+        authSession: AuthSession? = nil
+    ) {
         self.authService = authService
+        self.viewModel = LoginViewModel(authSession: authSession)
 
         super.init(nibName: nil, bundle: nil)
     }

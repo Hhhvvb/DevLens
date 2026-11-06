@@ -45,6 +45,29 @@ final class MockAuthService: AuthService {
             )
         }
     }
+
+    func refresh(
+        _ request: RefreshRequest
+    ) async throws -> LoginResponse {
+        try await Task.sleep(for: .seconds(1))
+
+        switch scenario {
+        case .failure:
+            throw MockAuthError.invalidCredentials
+
+        case .success:
+            return LoginResponse(
+                user: AuthUser(
+                    id: UUID(),
+                    email: "preview@example.com",
+                    nickname: "预览用户"
+                ),
+                accessToken: "preview-new-access-token",
+                refreshToken: "preview-new-refresh-token",
+                expiresIn: 900
+            )
+        }
+    }
 }
 
 #endif

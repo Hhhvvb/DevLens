@@ -488,4 +488,24 @@ final class APIClient:
 
         return response
     }
+
+    func refresh(
+        _ request: RefreshRequest
+    ) async throws -> LoginResponse {
+        let body = try JSONEncoder().encode(request)
+
+        let response: LoginResponse = try await sendJSONRequest(
+            path: "/v1/auth/refresh",
+            method: "POST",
+            body: body
+        )
+
+        guard !response.accessToken.isEmpty,
+              !response.refreshToken.isEmpty,
+              response.expiresIn > 0 else {
+            throw APIError.invalidResponse
+        }
+
+        return response
+    }
 }

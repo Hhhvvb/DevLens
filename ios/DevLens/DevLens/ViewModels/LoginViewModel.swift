@@ -17,12 +17,17 @@ nonisolated enum LoginViewState {
 
 @MainActor
 final class LoginViewModel {
+    private let authSession: AuthSession?
     var onStateChanged: ((LoginViewState) -> Void)?
 
     private(set) var state: LoginViewState = .idle {
         didSet {
             onStateChanged?(state)
         }
+    }
+
+    init(authSession: AuthSession? = nil) {
+        self.authSession = authSession
     }
 
     func validationMessage(
@@ -87,6 +92,12 @@ final class LoginViewModel {
 
         do {
             let response = try await service.login(request)
+
+            try Task.checkCancellation()
+
+            if let authSession {
+                try await authSession.accept(response)
+            }
 
             try Task.checkCancellation()
 

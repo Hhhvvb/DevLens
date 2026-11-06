@@ -48,3 +48,9 @@ class LoginResponse(BaseModel):
     access_token: str = Field(repr=False)
     refresh_token: str = Field(repr=False)
     expires_in: int
+
+class RefreshRequest(BaseModel):
+    refresh_token: SecretStr = Field(
+        min_length=1,
+        max_length=256,
+    )

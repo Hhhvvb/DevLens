@@ -24,3 +24,11 @@ nonisolated struct LoginResponse: Decodable {
         case expiresIn = "expires_in"
     }
 }
+
+nonisolated struct RefreshRequest: Encodable {
+    let refreshToken: String
+
+    enum CodingKeys: String, CodingKey {
+        case refreshToken = "refresh_token"
+    }
+}
