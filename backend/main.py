@@ -4,7 +4,7 @@ import asyncio
 
 from openai import APIError, APITimeoutError
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
 from dataclasses import asdict
@@ -29,6 +29,7 @@ from registration_service import RegistrationService
 from smtplib import SMTPException
 from session_store import SessionStore
 from auth_dependencies import get_current_user
+from avatar_service import MAX_AVATAR_UPLOAD_BYTES, prepare_avatar
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -299,6 +300,61 @@ def get_me(
     user: AuthUser = Depends(get_current_user)
 ) -> AuthUser:
     return user
+
+@app.put("/v1/auth/me/avatar", status_code=204)
+async def upload_my_avatar(
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    content_type = request.headers.get("content-type", "")
+    media_type = content_type.split(";", 1)[0].strip().lower()
+
+    if media_type != "image/jpeg":
+        raise HTTPException(
+            status_code=415,
+            detail="头像上传只接受 JPEG 图片。",
+        )
+
+    body = bytearray()
+
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_AVATAR_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="头像文件不能超过 1 MiB。",
+            )
+
+        body.extend(chunk)
+
+    try:
+        image_data = await run_in_threadpool(prepare_avatar, bytes(body))
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+
+    store = request.app.state.user_store
+    await run_in_threadpool(store.save_avatar, user.id, image_data)
+
+    return Response(status_code=204)
+
+@app.get("/v1/auth/me/avatar")
+def get_my_avatar(
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    store = request.app.state.user_store
+    image_data = store.get_avatar(user.id)
+
+    if image_data is None:
+        raise HTTPException(status_code=404, detail="尚未设置头像。")
+
+    return Response(
+        content=image_data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 async def require_generation_access(
     http_request: Request,

@@ -76,3 +76,4 @@ zstandard==0.25.0
 chromadb==1.5.9
 pwdlib[argon2]==0.3.1
 email-validator==2.3.0
+Pillow==13.0.0
