@@ -3,7 +3,7 @@ import json
 import asyncio
 
 from openai import APIError, APITimeoutError
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
@@ -20,6 +20,15 @@ from generation_models import ( GenerationInput, GenerationSnapshot, GenerationS
 from generation_store import ( GenerationConflictError, GenerationStore, )
 from conversation_models import ( CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
+from user_store import UserStore
+from auth_service import ( AuthenticationService, EmailNotVerifiedError, InvalidCredentialsError, )
+from auth_models import ( RefreshRequest, AuthUser, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
+from email_service import LocalEmailService
+from email_verification_store import EmailVerificationStore
+from registration_service import RegistrationService
+from smtplib import SMTPException
+from session_store import SessionStore
+from auth_dependencies import get_current_user
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,9 +48,36 @@ async def lifespan(app: FastAPI):
         database_path,
     )
 
+    app.state.user_store = await run_in_threadpool(
+        UserStore,
+        database_path,
+    )
+
+    app.state.session_store = await run_in_threadpool(
+        SessionStore,
+        database_path,
+    )
+
+    app.state.email_verification_store = await run_in_threadpool(
+        EmailVerificationStore,
+        database_path,
+    )
+
+    app.state.registration_service = RegistrationService(
+        user_store=app.state.user_store,
+        verification_store=app.state.email_verification_store,
+        email_service=LocalEmailService(),
+    )
+
+    app.state.auth_service = await run_in_threadpool(
+        AuthenticationService,
+        app.state.user_store,
+    )
+
     app.state.retriever = await run_in_threadpool(
         CodeRetriever
     )
+
     app.state.retrieval_lock = asyncio.Lock()
 
     try:
@@ -50,6 +86,11 @@ async def lifespan(app: FastAPI):
         del app.state.retriever
         del app.state.generation_store
         del app.state.conversation_store
+        del app.state.auth_service
+        del app.state.user_store
+        del app.state.registration_service
+        del app.state.email_verification_store
+        del app.state.session_store
 
 app = FastAPI(
     title="DevLens",
@@ -142,6 +183,156 @@ def health():
         "version": "0.1.0"
     }
 
+@app.post(
+    "/v1/auth/register",
+    response_model=RegisterResponse,
+    status_code=202,
+)
+def register(
+    request: RegisterRequest,
+    http_request: Request,
+) -> RegisterResponse:
+    service = http_request.app.state.registration_service
+
+    try:
+        service.register(request)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        ) from error
+    except (SMTPException, OSError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="验证邮件暂时发送失败，请稍后重新提交注册。"
+        ) from error
+
+    return RegisterResponse(
+        message=(
+            "如果该邮箱可以注册或尚未完成验证，"
+            "验证邮件将发送至该邮箱，请查收。"
+        )
+    )
+
+@app.post(
+    "/v1/auth/verify-email",
+    response_model=VerifyEmailResponse,
+    status_code=200,
+)
+def verify_email(
+    request: VerifyEmailRequest,
+    http_request: Request,
+) -> VerifyEmailResponse:
+    store = http_request.app.state.email_verification_store
+
+    verified = store.consume(
+        request.token.get_secret_value()
+    )
+
+    if not verified:
+        raise HTTPException(
+            status_code=400,
+            detail="验证信息无效、已过期或已使用，请重新申请验证邮件。",
+        )
+
+    return VerifyEmailResponse(
+        message="邮箱验证成功。",
+    )
+
+@app.post(
+    "/v1/auth/login",
+    response_model=LoginResponse,
+    status_code=200,
+)
+def login(
+    request: LoginRequest,
+    http_request: Request,
+) -> LoginResponse:
+    auth_service = http_request.app.state.auth_service
+    session_store = http_request.app.state.session_store
+
+    try:
+        user = auth_service.authenticate(request)
+    except InvalidCredentialsError as error:
+        raise HTTPException(
+            status_code=401,
+            detail="邮箱或密码不正确。",
+        ) from error
+    except EmailNotVerifiedError as error:
+        raise HTTPException(
+            status_code=403,
+            detail="请先验证邮箱后再登录。",
+        ) from error
+
+    response = session_store.create(user)
+
+    return response
+
+@app.post(
+    "/v1/auth/refresh",
+    response_model=LoginResponse,
+    status_code=200,
+)
+def refresh_session(
+    request: RefreshRequest,
+    http_request: Request,
+) -> LoginResponse:
+    store = http_request.app.state.session_store
+
+    response = store.refresh(
+        request.refresh_token.get_secret_value()
+    )
+
+    if response is None:
+        raise HTTPException(
+            status_code=401,
+            detail="登录已失效，请重新登录。",
+        )
+
+    return response
+
+@app.get(
+    "/v1/auth/me",
+    response_model=AuthUser,
+)
+def get_me(
+    user: AuthUser = Depends(get_current_user)
+) -> AuthUser:
+    return user
+
+async def require_generation_access(
+    http_request: Request,
+    generation_id : UUID,
+    user_id: UUID,
+) -> GenerationSnapshot:
+    generation_store = http_request.app.state.generation_store
+    conversation_store = http_request.app.state.conversation_store
+
+    snapshot = await run_in_threadpool(
+        generation_store.get,
+        generation_id,
+    )
+
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
+    conversation = await run_in_threadpool(
+        conversation_store.get,
+        snapshot.conversation_id,
+        user_id,
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
+    return snapshot
+
 @app.get(
     "/v1/generations/{generation_id}",
     response_model=GenerationSnapshot,
@@ -149,19 +340,13 @@ def health():
 async def get_generation(
     generation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
-    snapshot = await run_in_threadpool(
-        http_request.app.state.generation_store.get,
+    return await require_generation_access(
+        http_request,
         generation_id,
+        user.id
     )
-
-    if snapshot is None:
-        raise HTTPException(
-            status_code=404,
-            detail="生成任务不存在",
-        )
-
-    return snapshot
 
 @app.post("/v1/echo")
 def echo(request: EchoRequest):
@@ -330,7 +515,22 @@ async def ask_stream(
 async def create_generation(
     request: CreateGenerationRequest,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user),
 ):
+    conversation_store = http_request.app.state.conversation_store
+
+    conversation = await run_in_threadpool(
+        conversation_store.get,
+        request.conversation_id,
+        user.id
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
     question = request.question.strip()
 
     if not question:
@@ -373,7 +573,14 @@ async def create_generation(
 async def stop_generation(
     generation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
+    await require_generation_access(
+        http_request,
+        generation_id,
+        user.id
+    )
+
     snapshot = await run_in_threadpool(
         http_request.app.state.generation_store.request_stop,
         generation_id,
@@ -391,19 +598,15 @@ async def stop_generation(
 async def subscribe_generation(
     generation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
     store = http_request.app.state.generation_store
 
-    initial = await run_in_threadpool(
-        store.get,
+    initial = await require_generation_access(
+        http_request,
         generation_id,
+        user.id
     )
-
-    if initial is None:
-        raise HTTPException(
-            status_code=404,
-            detail="生成任务不存在",
-        )
 
     async def events():
         snapshot = initial
@@ -467,6 +670,7 @@ async def subscribe_generation(
 async def create_conversation(
     request: CreateConversationRequest,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
     store = http_request.app.state.conversation_store
 
@@ -474,7 +678,13 @@ async def create_conversation(
         return await run_in_threadpool(
             store.create_or_get,
             request,
+            user.id
         )
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=422,
@@ -485,10 +695,14 @@ async def create_conversation(
     "/v1/conversations",
     response_model=list[ConversationSummary],
 )
-async def list_conversations(http_request: Request):
+async def list_conversations(
+    http_request: Request,
+    user: AuthUser = Depends(get_current_user)
+):
     store = http_request.app.state.conversation_store
     return await run_in_threadpool(
         store.list_conversations,
+        user.id
     )
 
 @app.get(
@@ -498,12 +712,14 @@ async def list_conversations(http_request: Request):
 async def get_conversation(
     conversation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user),
 ):
     store = http_request.app.state.conversation_store
 
     conversation = await run_in_threadpool(
         store.get,
         conversation_id,
+        user.id
     )
 
     if conversation is None:
@@ -521,12 +737,14 @@ async def get_conversation(
 async def list_conversation_messages(
     conversation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user),
 ):
     store = http_request.app.state.conversation_store
 
     conversation = await run_in_threadpool(
         store.get,
         conversation_id,
+        user.id
     )
 
     if conversation is None:
@@ -547,12 +765,14 @@ async def list_conversation_messages(
 async def get_conversation_active_generation(
     conversation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
     conversation_store = (http_request.app.state.conversation_store)
     generation_store = (http_request.app.state.generation_store)
     conversation = await run_in_threadpool(
         conversation_store.get,
         conversation_id,
+        user.id
     )
 
     if conversation is None:

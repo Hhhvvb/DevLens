@@ -11,20 +11,128 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
 
+    private let apiClient = APIClient()
 
-    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+    private lazy var authSession = AuthSession(
+        service: apiClient,
+        tokenStore: RefreshTokenStore()
+    )
+
+    func scene(
+        _ scene: UIScene,
+        willConnectTo session: UISceneSession,
+        options connectionOptions: UIScene.ConnectionOptions
+    ) {
         guard let windowScene = scene as? UIWindowScene else {
             return
         }
 
-        let conversationListController = ConversationListViewController(style: .insetGrouped)
-
         let window = UIWindow(windowScene: windowScene)
-
-        window.rootViewController = UINavigationController(rootViewController: conversationListController)
-
         self.window = window
+
+        authSession.onStateChanged = { [weak self] state in
+            self?.renderAuthState(state)
+        }
+
+        renderAuthState(authSession.state)
+
         window.makeKeyAndVisible()
+
+        Task {
+            await authSession.restore()
+        }
+    }
+
+    private func renderAuthState(_ state: AuthSessionState) {
+        switch state {
+        case .idle, .restoring:
+            showStatus(
+                title: "DevLens",
+                message: "正在恢复登录..."
+            )
+
+        case .signedOut:
+            showLogin()
+
+        case .signedIn(let user):
+            let conversationClient = APIClient(
+                accessTokenProvider: { [weak session = authSession] in
+                    session?.accessToken
+                }
+            )
+
+            window?.rootViewController = MainTabBarController(
+                user: user,
+                conversationService: conversationClient
+            )
+
+        case .failure(let message):
+            showStatus(
+                title: "恢复登录失败",
+                message: message,
+                allowsLogin: true
+            )
+        }
+    }
+
+    @objc private func showLogin() {
+        let controller = LoginViewController(
+            authService: apiClient,
+            authSession: authSession
+        )
+
+        window?.rootViewController = UINavigationController(
+            rootViewController: controller
+        )
+    }
+
+    private func showStatus(
+        title: String,
+        message: String,
+        allowsLogin: Bool = false
+    ) {
+        let controller = UIViewController()
+        controller.title = title
+        controller.view.backgroundColor = .systemBackground
+
+        let label = UILabel()
+        label.text = message
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        controller.view.addSubview(label)
+
+        let safeArea = controller.view.safeAreaLayoutGuide
+
+        NSLayoutConstraint.activate([
+            label.centerYAnchor.constraint(
+                equalTo: safeArea.centerYAnchor
+            ),
+            label.leadingAnchor.constraint(
+                equalTo: safeArea.leadingAnchor,
+                constant: 24
+            ),
+            label.trailingAnchor.constraint(
+                equalTo: safeArea.trailingAnchor,
+                constant: -24
+            )
+        ])
+
+        if allowsLogin {
+            controller.navigationItem.rightBarButtonItem = UIBarButtonItem(
+                title: "密码登录",
+                style: .plain,
+                target: self,
+                action: #selector(showLogin)
+            )
+        }
+
+        window?.rootViewController = UINavigationController(
+            rootViewController: controller
+        )
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {

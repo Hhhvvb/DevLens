@@ -41,11 +41,42 @@ class ConversationStore:
                 """
             )
 
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_members (
+                    conversation_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL
+                        CHECK (role IN ('owner', 'admin', 'member')),
+                    joined_at TEXT NOT NULL,
+                    PRIMARY KEY (conversation_id, user_id)
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS
+                    conversation_members_by_user
+                ON conversation_members (user_id)
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    one_owner_per_conversation
+                ON conversation_members (conversation_id)
+                WHERE role = 'owner'
+                """
+            )
+
             connection.commit()
 
     def create_or_get(
         self,
         request: CreateConversationRequest,
+        user_id: UUID,
     ) -> ConversationSummary:
         title = request.title.strip()
 
@@ -58,25 +89,7 @@ class ConversationStore:
             sqlite3.connect(self.database_path)
         ) as connection:
             connection.row_factory = sqlite3.Row
-
-            connection.execute(
-                """
-                INSERT INTO conversations (
-                    id,
-                    title,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO NOTHING
-                """,
-                (
-                    str(request.id),
-                    title,
-                    now,
-                    now,
-                )
-            )
+            connection.execute("BEGIN IMMEDIATE")
 
             row = connection.execute(
                 """
@@ -87,17 +100,73 @@ class ConversationStore:
                 (str(request.id),),
             ).fetchone()
 
-            if row is None:
-                raise RuntimeError("创建会话后未找到对应记录。")
+            if row is not None:
+                membership = connection.execute(
+                    """
+                    SELECT role
+                    FROM conversation_members
+                    WHERE conversation_id = ?
+                      AND user_id = ?
+                    """,
+                    (str(request.id), str(user_id)),
+                ).fetchone()
 
-            result = ConversationSummary.model_validate(dict(row))
+                if membership is None:
+                    raise PermissionError("会话不存在或无权访问。")
+
+                return ConversationSummary.model_validate(dict(row))
+
+            connection.execute(
+                """
+                INSERT INTO conversations (
+                    id,
+                    title,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    str(request.id),
+                    title,
+                    now,
+                    now,
+                )
+            )
+
+            connection.execute(
+                """
+                INSERT INTO conversation_members (
+                    conversation_id,
+                    user_id,
+                    role,
+                    joined_at
+                )
+                VALUES (?, ?, 'owner', ?)
+                """,
+                (
+                    str(request.id),
+                    str(user_id),
+                    now,
+                ),
+            )
+
+            result = ConversationSummary(
+                id=request.id,
+                title=title,
+                created_at=now,
+                updated_at=now,
+            )
 
             connection.commit()
 
             return result
 
 
-    def list_conversations(self) -> list[ConversationSummary]:
+    def list_conversations(
+        self,
+        user_id: UUID,
+    ) -> list[ConversationSummary]:
         with closing(
             sqlite3.connect(self.database_path)
         ) as connection:
@@ -105,10 +174,13 @@ class ConversationStore:
 
             rows = connection.execute(
                 """
-                SELECT id, title, created_at, updated_at
-                FROM conversations
-                ORDER BY updated_at DESC, id ASC
-                """
+                SELECT c.id, c.title, c.created_at, c.updated_at
+                FROM conversation_members AS m
+                JOIN conversations AS c ON c.id = m.conversation_id
+                WHERE m.user_id = ?
+                ORDER BY c.updated_at DESC, c.id ASC
+                """,
+                (str(user_id),),
             ).fetchall()
 
             return [
@@ -119,6 +191,7 @@ class ConversationStore:
     def get(
         self,
         conversation_id: UUID,
+        user_id: UUID,
     ) -> ConversationSummary | None:
         with closing(
             sqlite3.connect(self.database_path)
@@ -127,11 +200,14 @@ class ConversationStore:
 
             row = connection.execute(
                 """
-                SELECT id, title, created_at, updated_at
-                FROM conversations
-                WHERE id = ?
+                SELECT c.id, c.title, c.created_at, c.updated_at
+                FROM conversations AS c
+                JOIN conversation_members AS m
+                    ON m.conversation_id = c.id
+                WHERE c.id = ?
+                  AND m.user_id = ?
                 """,
-                (str(conversation_id),),
+                (str(conversation_id), str(user_id)),
             ).fetchone()
 
             if row is None:
