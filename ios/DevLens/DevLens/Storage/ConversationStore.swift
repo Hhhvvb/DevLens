@@ -11,7 +11,7 @@ nonisolated enum ConversationStoreError: LocalizedError {
 actor ConversationStore {
     private let fileURL: URL
 
-    init() throws {
+    init(userID: UUID) throws {
         let directory = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -19,7 +19,7 @@ actor ConversationStore {
             create: true
         )
 
-        fileURL = directory.appendingPathComponent("conversations.json")
+        fileURL = directory.appendingPathComponent("conversations-\(userID.uuidString).json")
     }
 
     func load() throws -> [Conversation] {

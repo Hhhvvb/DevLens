@@ -55,8 +55,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             showLogin()
 
         case .signedIn(let user):
+            let conversationClient = APIClient(
+                accessTokenProvider: { [weak session = authSession] in
+                    session?.accessToken
+                }
+            )
+
             window?.rootViewController = MainTabBarController(
-                user: user
+                user: user,
+                conversationService: conversationClient
             )
 
         case .failure(let message):

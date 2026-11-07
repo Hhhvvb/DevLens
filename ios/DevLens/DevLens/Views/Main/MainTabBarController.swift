@@ -2,10 +2,14 @@ import UIKit
 
 final class MainTabBarController: UITabBarController {
     private let user: AuthUser
+    private let conversationService: any ConversationService & GenerationService
 
-    init(user: AuthUser) {
+    init(
+        user: AuthUser,
+        conversationService: any ConversationService & GenerationService
+    ) {
         self.user = user
-
+        self.conversationService = conversationService
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -17,7 +21,8 @@ final class MainTabBarController: UITabBarController {
         super.viewDidLoad()
 
         let conversations = ConversationListViewController(
-            style: .insetGrouped
+            userID: user.id,
+            conversationService: conversationService
         )
 
         let profile = ProfileViewController(user: user)

@@ -5,11 +5,25 @@ final class ConversationListViewController: UITableViewController {
     private var store: ConversationStore?
     private var isCreating = false
     private var saveTask: Task<Void, Never>?
-    private let conversationService: any ConversationService = APIClient()
+    private let conversationService: any ConversationService & GenerationService
     private var pendingConversation: Conversation?
     private var serverOnlyConversationIDs: Set<UUID> = []
     private var isOpeningConversation = false
     private var isLoadingServerConversations = false
+    private let userID: UUID
+
+    init(
+        userID: UUID,
+        conversationService: any ConversationService & GenerationService
+    ) {
+        self.userID = userID
+        self.conversationService = conversationService
+        super.init(style: .insetGrouped)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("请使用 init(conversationService:) 创建会话列表")
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -50,7 +64,7 @@ final class ConversationListViewController: UITableViewController {
 
     private func loadConversations() async {
         do {
-            let store = try ConversationStore()
+            let store = try ConversationStore(userID: userID)
             let conversations = try await store.load()
 
             self.store = store
@@ -241,7 +255,7 @@ final class ConversationListViewController: UITableViewController {
     private func showConversation(_ conversation: Conversation) {
         let controller = ChatViewController(
             conversation: conversation,
-            apiClient: APIClient()
+            apiClient: conversationService
         )
 
         controller.onSaveConversation = { [weak self] conversation in

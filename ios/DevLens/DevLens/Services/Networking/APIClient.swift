@@ -82,16 +82,43 @@ final class APIClient:
     private let baseURL = "http://172.20.10.10:8000"
     #endif
 
+    private let accessTokenProvider: @MainActor () -> String?
+
+    init(
+        accessTokenProvider: @escaping @MainActor () -> String? = { nil }
+    ) {
+        self.accessTokenProvider = accessTokenProvider
+    }
+
     func createGeneration(
         _ input: CreateGenerationRequest
     ) async throws -> GenerationSnapshot {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。"
+            )
+        }
+
         let body = try JSONEncoder().encode(input)
 
         return try await sendJSONRequest(
             path: "/v1/generations",
             method: "POST",
-            body: body
+            body: body,
+            accessToken: accessToken
         )
+    }
+
+    private func requireAccessToken() throws -> String {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。"
+            )
+        }
+
+        return accessToken
     }
 
     func getGeneration(
@@ -99,7 +126,8 @@ final class APIClient:
     ) async throws -> GenerationSnapshot {
         return try await sendJSONRequest(
             path: "/v1/generations/\(id.uuidString)",
-            method: "GET"
+            method: "GET",
+            accessToken: requireAccessToken()
         )
     }
 
@@ -108,7 +136,8 @@ final class APIClient:
     ) async throws -> GenerationSnapshot {
         return try await sendJSONRequest(
             path: "/v1/generations/\(id.uuidString)/stop",
-            method: "POST"
+            method: "POST",
+            accessToken: requireAccessToken()
         )
     }
 
@@ -218,7 +247,8 @@ final class APIClient:
     private func sendJSONRequest<Response: Decodable>(
         path: String,
         method: String,
-        body: Data? = nil
+        body: Data? = nil,
+        accessToken: String? = nil
     ) async throws -> Response {
         guard let url = URL(
             string: "\(baseURL)\(path)"
@@ -230,6 +260,13 @@ final class APIClient:
         request.httpMethod = method
         request.httpBody = body
         request.timeoutInterval = 20
+
+        if let accessToken {
+            request.setValue(
+                "Bearer \(accessToken)",
+                forHTTPHeaderField: "Authorization"
+            )
+        }
 
         request.setValue(
             "application/json",
@@ -309,6 +346,13 @@ final class APIClient:
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 60
+
+        let accessToken = try requireAccessToken()
+
+        request.setValue(
+            "Bearer \(accessToken)",
+            forHTTPHeaderField: "Authorization"
+        )
 
         request.setValue(
             "text/event-stream",
@@ -435,37 +479,69 @@ final class APIClient:
     func createConversation(
         _ input: CreateConversationRequest
     ) async throws -> ConversationSummary {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。"
+            )
+        }
+
         let body = try JSONEncoder().encode(input)
 
         return try await sendJSONRequest(
             path: "/v1/conversations",
             method: "POST",
-            body: body
+            body: body,
+            accessToken: accessToken
         )
     }
 
     func listConversations() async throws -> [ConversationSummary] {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。"
+            )
+        }
+
         return try await sendJSONRequest(
             path: "/v1/conversations",
-            method: "GET"
+            method: "GET",
+            accessToken: accessToken
         )
     }
 
     func listMessages(
         conversationID: UUID
     ) async throws -> [ConversationMessage] {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。",
+            )
+        }
+
         return try await sendJSONRequest(
             path: "/v1/conversations/\(conversationID.uuidString)/messages",
-            method: "GET"
+            method: "GET",
+            accessToken: accessToken
         )
     }
 
     func getActiveGeneration(
         conversationID: UUID
     ) async throws -> ConversationGenerationRecovery? {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。"
+            )
+        }
+
         return try await sendJSONRequest(
             path: "/v1/conversations/\(conversationID.uuidString)/active-generation",
-            method: "GET"
+            method: "GET",
+            accessToken: accessToken
         )
     }
 

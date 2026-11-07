@@ -300,6 +300,39 @@ def get_me(
 ) -> AuthUser:
     return user
 
+async def require_generation_access(
+    http_request: Request,
+    generation_id : UUID,
+    user_id: UUID,
+) -> GenerationSnapshot:
+    generation_store = http_request.app.state.generation_store
+    conversation_store = http_request.app.state.conversation_store
+
+    snapshot = await run_in_threadpool(
+        generation_store.get,
+        generation_id,
+    )
+
+    if snapshot is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
+    conversation = await run_in_threadpool(
+        conversation_store.get,
+        snapshot.conversation_id,
+        user_id,
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
+    return snapshot
+
 @app.get(
     "/v1/generations/{generation_id}",
     response_model=GenerationSnapshot,
@@ -307,19 +340,13 @@ def get_me(
 async def get_generation(
     generation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
-    snapshot = await run_in_threadpool(
-        http_request.app.state.generation_store.get,
+    return await require_generation_access(
+        http_request,
         generation_id,
+        user.id
     )
-
-    if snapshot is None:
-        raise HTTPException(
-            status_code=404,
-            detail="生成任务不存在",
-        )
-
-    return snapshot
 
 @app.post("/v1/echo")
 def echo(request: EchoRequest):
@@ -488,7 +515,22 @@ async def ask_stream(
 async def create_generation(
     request: CreateGenerationRequest,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user),
 ):
+    conversation_store = http_request.app.state.conversation_store
+
+    conversation = await run_in_threadpool(
+        conversation_store.get,
+        request.conversation_id,
+        user.id
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
     question = request.question.strip()
 
     if not question:
@@ -531,7 +573,14 @@ async def create_generation(
 async def stop_generation(
     generation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
+    await require_generation_access(
+        http_request,
+        generation_id,
+        user.id
+    )
+
     snapshot = await run_in_threadpool(
         http_request.app.state.generation_store.request_stop,
         generation_id,
@@ -549,19 +598,15 @@ async def stop_generation(
 async def subscribe_generation(
     generation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
     store = http_request.app.state.generation_store
 
-    initial = await run_in_threadpool(
-        store.get,
+    initial = await require_generation_access(
+        http_request,
         generation_id,
+        user.id
     )
-
-    if initial is None:
-        raise HTTPException(
-            status_code=404,
-            detail="生成任务不存在",
-        )
 
     async def events():
         snapshot = initial
@@ -625,6 +670,7 @@ async def subscribe_generation(
 async def create_conversation(
     request: CreateConversationRequest,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
     store = http_request.app.state.conversation_store
 
@@ -632,7 +678,13 @@ async def create_conversation(
         return await run_in_threadpool(
             store.create_or_get,
             request,
+            user.id
         )
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        ) from error
     except ValueError as error:
         raise HTTPException(
             status_code=422,
@@ -643,10 +695,14 @@ async def create_conversation(
     "/v1/conversations",
     response_model=list[ConversationSummary],
 )
-async def list_conversations(http_request: Request):
+async def list_conversations(
+    http_request: Request,
+    user: AuthUser = Depends(get_current_user)
+):
     store = http_request.app.state.conversation_store
     return await run_in_threadpool(
         store.list_conversations,
+        user.id
     )
 
 @app.get(
@@ -656,12 +712,14 @@ async def list_conversations(http_request: Request):
 async def get_conversation(
     conversation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user),
 ):
     store = http_request.app.state.conversation_store
 
     conversation = await run_in_threadpool(
         store.get,
         conversation_id,
+        user.id
     )
 
     if conversation is None:
@@ -679,12 +737,14 @@ async def get_conversation(
 async def list_conversation_messages(
     conversation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user),
 ):
     store = http_request.app.state.conversation_store
 
     conversation = await run_in_threadpool(
         store.get,
         conversation_id,
+        user.id
     )
 
     if conversation is None:
@@ -705,12 +765,14 @@ async def list_conversation_messages(
 async def get_conversation_active_generation(
     conversation_id: UUID,
     http_request: Request,
+    user: AuthUser = Depends(get_current_user)
 ):
     conversation_store = (http_request.app.state.conversation_store)
     generation_store = (http_request.app.state.generation_store)
     conversation = await run_in_threadpool(
         conversation_store.get,
         conversation_id,
+        user.id
     )
 
     if conversation is None:
