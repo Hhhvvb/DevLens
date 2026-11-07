@@ -3,13 +3,17 @@ import UIKit
 final class MainTabBarController: UITabBarController {
     private let user: AuthUser
     private let conversationService: any ConversationService & GenerationService
+    private let profileService: any ProfileService
 
     init(
         user: AuthUser,
-        conversationService: any ConversationService & GenerationService
+        conversationService: any ConversationService & GenerationService,
+        profileService: any ProfileService
     ) {
         self.user = user
         self.conversationService = conversationService
+        self.profileService = profileService
+
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -25,7 +29,10 @@ final class MainTabBarController: UITabBarController {
             conversationService: conversationService
         )
 
-        let profile = ProfileViewController(user: user)
+        let profile = ProfileViewController(
+            user: user,
+            profileService: profileService
+        )
 
         let conversationNavigation = UINavigationController(
             rootViewController: conversations

@@ -2,7 +2,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID,uuid4
 
 from auth_models import AuthUser, RegisterRequest, UserRecord
 from password_service import hash_password
@@ -35,6 +35,15 @@ class UserStore:
                     password_hash TEXT NOT NULL,
                     email_verified INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_avatars (
+                    user_id TEXT PRIMARY KEY,
+                    image_data BLOB NOT NULL
                 )
                 """
             )
@@ -128,3 +137,37 @@ class UserStore:
                 return None
 
             return UserRecord.model_validate(dict(row))
+
+    def save_avatar(self, user_id: UUID, image_data: bytes) -> None:
+        with closing(
+            sqlite3.connect(self.database_path)
+        ) as connection:
+            connection.execute(
+                """
+                INSERT INTO user_avatars (user_id, image_data)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    image_data = excluded.image_data
+                """,
+                (str(user_id), image_data)
+            )
+
+            connection.commit()
+
+    def get_avatar(self, user_id: UUID) -> bytes | None:
+        with closing(
+            sqlite3.connect(self.database_path)
+        ) as connection:
+            row = connection.execute(
+                """
+                SELECT image_data
+                FROM user_avatars
+                WHERE user_id = ?
+                """,
+                (str(user_id),),
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            return row[0]

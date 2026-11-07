@@ -75,7 +75,8 @@ final class APIClient:
     QuestionService,
     GenerationService,
     ConversationService,
-    AuthService {
+    AuthService,
+    ProfileService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -583,5 +584,85 @@ final class APIClient:
         }
 
         return response
+    }
+
+    func loadMyAvatar() async throws -> Data? {
+        let (data, response) = try await sendAvatarRequest(method: "GET")
+
+        if response.statusCode == 404 {
+            return nil
+        }
+
+        guard response.statusCode == 200,
+              response.mimeType == "image/jpeg",
+              !data.isEmpty else {
+            throw APIError.invalidResponse
+        }
+
+        return data
+    }
+
+    func uploadMyAvatar(_ jpegData: Data) async throws {
+        let (_, response) = try await sendAvatarRequest(
+            method: "PUT",
+            jpegData: jpegData
+        )
+
+        guard response.statusCode == 204 else {
+            throw APIError.invalidResponse
+        }
+    }
+
+    private func sendAvatarRequest(
+        method: String,
+        jpegData: Data? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
+        guard let url = URL(string: "\(baseURL)/v1/auth/me/avatar") else {
+            throw APIError.invalidURL
+        }
+
+        let accessToken = try requireAccessToken()
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 20
+        request.setValue(
+            "Bearer \(accessToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        if let jpegData {
+            request.httpBody = jpegData
+            request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        } else {
+            request.setValue("image/jpeg", forHTTPHeaderField: "Accept")
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse
+            }
+
+            if method == "GET", http.statusCode == 404 {
+                return (data, http)
+            }
+
+            guard (200..<300).contains(http.statusCode) else {
+                let failure = try? JSONDecoder().decode(
+                    APIErrorResponse.self,
+                    from: data
+                )
+
+                throw APIError.httpFailure(
+                    statusCode: http.statusCode,
+                    message: failure?.detail ?? "头像请求失败，状态码：\(http.statusCode)"
+                )
+            }
+
+            return (data, http)
+        }
     }
 }

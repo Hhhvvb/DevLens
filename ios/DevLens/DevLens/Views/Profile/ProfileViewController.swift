@@ -3,11 +3,15 @@ import PhotosUI
 import UniformTypeIdentifiers
 
 final class ProfileViewController: UITableViewController {
-    private var viewModel: ProfileViewModel
+    private let viewModel: ProfileViewModel
     private var profileHeaderView: ProfileHeaderView?
+    private var isChangingAvatar = false
 
-    init(user: AuthUser) {
-        self.viewModel = ProfileViewModel(user: user)
+    init(user: AuthUser, profileService: any ProfileService) {
+        self.viewModel = ProfileViewModel(
+            user: user,
+            service: profileService
+        )
 
         super.init(style: .insetGrouped)
     }
@@ -39,6 +43,29 @@ final class ProfileViewController: UITableViewController {
         header.frame.size = CGSize(width: tableView.bounds.width, height: 188)
         profileHeaderView = header
         tableView.tableHeaderView = header
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await self.viewModel.loadAvatar()
+
+                if let data = self.viewModel.avatarData {
+                    self.profileHeaderView?.displayAvatar(data: data)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                let alert = UIAlertController(
+                    title: "无法读取头像",
+                    message: error.localizedDescription,
+                    preferredStyle: .alert
+                )
+                alert.addAction(
+                    UIAlertAction(title: "确定", style: .default)
+                )
+                self.present(alert, animated: true)
+            }
+        }
     }
 
     override func tableView(
@@ -81,6 +108,7 @@ final class ProfileViewController: UITableViewController {
     }
 
     private func showAvatarPicker() {
+        guard !isChangingAvatar else { return }
         var configuration = PHPickerConfiguration()
         configuration.filter = .images
         configuration.selectionLimit = 1
@@ -105,11 +133,17 @@ extension ProfileViewController: PHPickerViewControllerDelegate {
             return
         }
 
+        isChangingAvatar = true
+
         result.itemProvider.loadDataRepresentation(
             forTypeIdentifier: UTType.image.identifier
         ) { [weak self] data, _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+
+                defer {
+                    self.isChangingAvatar = false
+                }
 
                 guard let data else {
                     let alert = UIAlertController(
@@ -124,10 +158,22 @@ extension ProfileViewController: PHPickerViewControllerDelegate {
                     return
                 }
 
-                self.viewModel.setAvatarData(data)
+                do {
+                    try await self.viewModel.saveAvatar(from: data)
 
-                if let avatarData = self.viewModel.avatarData {
-                    self.profileHeaderView?.displayAvatar(data: avatarData)
+                    if let avatarData = self.viewModel.avatarData {
+                        self.profileHeaderView?.displayAvatar(data: avatarData)
+                    }
+                } catch {
+                    let alert = UIAlertController(
+                        title: "无法更换头像",
+                        message: error.localizedDescription,
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(
+                        UIAlertAction(title: "确定", style: .default)
+                    )
+                    self.present(alert, animated: true)
                 }
             }
         }
