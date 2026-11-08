@@ -5,7 +5,7 @@ import asyncio
 from openai import APIError, APITimeoutError
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from llm_service import ( ask_question, stream_question, StreamAnswerError )
 from dataclasses import asdict
 from contextlib import asynccontextmanager
@@ -21,6 +21,7 @@ from generation_store import ( GenerationConflictError, GenerationStore, )
 from conversation_models import ( CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
 from user_store import UserStore
+from friend_store import FriendStore
 from auth_service import ( AuthenticationService, EmailNotVerifiedError, InvalidCredentialsError, )
 from auth_models import ( RefreshRequest, AuthUser, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,)
 from email_service import LocalEmailService
@@ -30,6 +31,7 @@ from smtplib import SMTPException
 from session_store import SessionStore
 from auth_dependencies import get_current_user
 from avatar_service import MAX_AVATAR_UPLOAD_BYTES, prepare_avatar
+from friend_models import FriendSummary, IncomingFriendRequest
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,6 +53,11 @@ async def lifespan(app: FastAPI):
 
     app.state.user_store = await run_in_threadpool(
         UserStore,
+        database_path,
+    )
+
+    app.state.friend_store = await run_in_threadpool(
+        FriendStore,
         database_path,
     )
 
@@ -123,6 +130,9 @@ class ConversationGenerationRecovery(BaseModel):
 class AskResponse(BaseModel):
     question: str
     answer: str
+
+class SendFriendRequest(BaseModel):
+    email: EmailStr
 
 def prepare_history(
     request: AskRequest,
@@ -355,6 +365,70 @@ def get_my_avatar(
         media_type="image/jpeg",
         headers={"Cache-Control": "no-cache"},
     )
+
+@app.post("/v1/friend-requests", status_code=202)
+def send_friend_request(
+    body: SendFriendRequest,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+):
+    user_store = request.app.state.user_store
+    friend_store = request.app.state.friend_store
+
+    recipient = user_store.get_by_email(str(body.email))
+
+    if recipient is not None and recipient.email_verified:
+        try:
+            friend_store.send_request(user.id, recipient.id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
+
+    return {
+        "message": "已发送好友请求。"
+    }
+
+@app.get(
+    "/v1/friend-requests/incoming",
+    response_model=list[IncomingFriendRequest],
+)
+def list_incoming_friend_requests(
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> list[IncomingFriendRequest]:
+    store = request.app.state.friend_store
+    return store.list_incoming_requests(user.id)
+
+@app.post("/v1/friend-requests/{request_id}/accept", status_code=204)
+def accept_friend_request(
+    request_id: UUID,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    store = request.app.state.friend_store
+
+    accepted = store.accept_request(
+        request_id=request_id,
+        recipient_id=user.id,
+    )
+
+    if not accepted:
+        raise HTTPException(
+            status_code=404,
+            detial="好友申请不存在或已无法接受。",
+        )
+
+    return Response(status_code=204)
+
+@app.get("/v1/friends", response_model=list[FriendSummary])
+def list_friends(
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> list[FriendSummary]:
+    store = request.app.state.friend_store
+    return store.list_friends(user.id)
 
 async def require_generation_access(
     http_request: Request,
