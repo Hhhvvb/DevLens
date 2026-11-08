@@ -5,17 +5,20 @@ final class MainTabBarController: UITabBarController {
     private let conversationService: any ConversationService & GenerationService
     private let profileService: any ProfileService
     private let friendService: any FriendService
+    private let signOut: @MainActor () async throws -> Void
 
     init(
         user: AuthUser,
         conversationService: any ConversationService & GenerationService,
         profileService: any ProfileService,
-        friendService: any FriendService
+        friendService: any FriendService,
+        signOut: @escaping @MainActor () async throws -> Void
     ) {
         self.user = user
         self.conversationService = conversationService
         self.profileService = profileService
         self.friendService = friendService
+        self.signOut = signOut
 
         super.init(nibName: nil, bundle: nil)
     }
@@ -35,6 +38,30 @@ final class MainTabBarController: UITabBarController {
         let profile = ProfileViewController(
             user: user,
             profileService: profileService
+        )
+
+        let signOut = self.signOut
+
+        profile.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "退出",
+            primaryAction: UIAction { [weak profile] _ in
+                Task { @MainActor [weak profile] in
+                    guard let profile else { return }
+
+                    profile.navigationItem.leftBarButtonItem?.isEnabled = false
+
+                    defer {
+                        profile.navigationItem.leftBarButtonItem?.isEnabled = true
+                    }
+
+                    do {
+                        try await signOut()
+                    } catch {
+                        profile.navigationItem.prompt = error.localizedDescription
+                    }
+                }
+
+            }
         )
 
         let friendService = self.friendService

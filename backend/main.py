@@ -417,7 +417,28 @@ def accept_friend_request(
     if not accepted:
         raise HTTPException(
             status_code=404,
-            detial="好友申请不存在或已无法接受。",
+            detail="好友申请不存在或已无法接受。",
+        )
+
+    return Response(status_code=204)
+
+@app.post("/v1/friend-requests/{request_id}/decline", status_code=204)
+def decline_friend_request(
+    request_id: UUID,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    store = request.app.state.friend_store
+
+    declined = store.decline_request(
+        request_id=request_id,
+        recipient_id=user.id,
+    )
+
+    if not declined:
+        raise HTTPException(
+            status_code=404,
+            detail="好友申请不存在或已无法拒绝。",
         )
 
     return Response(status_code=204)

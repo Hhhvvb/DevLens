@@ -696,4 +696,52 @@ final class APIClient:
             accessToken: requireAccessToken()
         )
     }
+
+    func responseToFriendRequest(
+        id: UUID,
+        decision: FriendRequestDecision
+    ) async throws {
+        let path = "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)"
+
+        guard let url = URL(string: "\(baseURL)\(path)") else {
+            throw APIError.invalidURL
+        }
+
+        let accessToken = try requireAccessToken()
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue(
+            "Bearer \(accessToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse
+            }
+
+            guard http.statusCode == 204 else {
+                let failure = try? JSONDecoder().decode(
+                    APIErrorResponse.self,
+                    from: data
+                )
+
+                throw APIError.httpFailure(
+                    statusCode: http.statusCode,
+                    message: failure?.detail ?? "无法处理好友申请。"
+                )
+            }
+        } catch let error as URLError {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+
+            throw APIError.networkError(error.code)
+        }
+    }
 }

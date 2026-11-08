@@ -103,6 +103,7 @@ class FriendStore:
                     r.id,
                     r.sender_id,
                     u.nickname AS sender_nickname,
+                    u.email AS sender_email,
                     r.created_at
                 FROM friend_requests AS r
                 JOIN users AS u ON u.id = r.sender_id
@@ -169,6 +170,29 @@ class FriendStore:
 
             connection.commit()
             return True
+
+    def decline_request(
+        self,
+        request_id: UUID,
+        recipient_id: UUID,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE friend_requests
+                SET status = 'declined',
+                    responded_at = COALESCE(responded_at, ?)
+                WHERE id = ?
+                  AND recipient_id = ?
+                  AND status IN ('pending', 'declined')
+                """,
+                (now, str(request_id), str(recipient_id)),
+            )
+
+            connection.commit()
+            return cursor.rowcount == 1
 
     def list_friends(self, user_id: UUID) -> list[FriendSummary]:
         current_user_id = str(user_id)

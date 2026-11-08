@@ -24,12 +24,19 @@ nonisolated struct IncomingFriendRequest: Decodable, Identifiable {
     let id: UUID
     let senderID: UUID
     let senderNickname: String
+    let senderEmail: String
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
         case senderID = "sender_id"
         case senderNickname = "sender_nickname"
+        case senderEmail = "sender_email"
         case createdAt = "created_at"
     }
+}
+
+nonisolated enum FriendRequestDecision: String {
+    case accept
+    case decline
 }

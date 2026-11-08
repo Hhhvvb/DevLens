@@ -66,6 +66,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 conversationService: conversationClient,
                 profileService: conversationClient,
                 friendService: conversationClient,
+                signOut: authSession.signOut
             )
 
         case .failure(let message):

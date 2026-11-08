@@ -23,4 +23,16 @@ final class FriendListViewModel {
         let receipt = try await service.sendFriendRequest(email: trimmedEmail)
         return receipt.message
     }
+
+    func respond(
+        to id: UUID,
+        decision: FriendRequestDecision
+    ) async throws {
+        try await service.responseToFriendRequest(
+            id: id,
+            decision: decision
+        )
+
+        incomingRequests.removeAll { $0.id == id }
+    }
 }

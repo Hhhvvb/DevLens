@@ -28,6 +28,11 @@ final class FriendListViewController: UITableViewController {
             forCellReuseIdentifier: "FriendCell"
         )
 
+        tableView.register(
+            FriendRequestCell.self,
+            forCellReuseIdentifier: "FriendRequestCell"
+        )
+
         contentUnavailableConfiguration = UIContentUnavailableConfiguration.loading()
 
         Task { [weak self] in
@@ -53,6 +58,7 @@ final class FriendListViewController: UITableViewController {
             var configuration = UIContentUnavailableConfiguration.empty()
             configuration.text = "无法加载好友"
             configuration.secondaryText = error.localizedDescription
+            contentUnavailableConfiguration = configuration
         }
     }
 
@@ -71,27 +77,52 @@ final class FriendListViewController: UITableViewController {
         _ tableView: UITableView,
         cellForRowAt indexPath: IndexPath
     ) -> UITableViewCell {
+        if indexPath.section == 0 {
+            let request = viewModel.incomingRequests[indexPath.row]
+            let cell = tableView.dequeueReusableCell(
+                withIdentifier: "FriendRequestCell",
+                for: indexPath
+            ) as! FriendRequestCell
+
+            cell.configure(
+                nickname: request.senderNickname,
+                email: request.senderEmail
+            )
+
+            cell.onDecline = { [weak self] in
+                Task { [weak self] in
+                    await self?.respond(to: request.id, decision: .decline)
+                }
+            }
+
+            cell.onAccept = { [weak self] in
+                Task { [weak self] in
+                    await self?.respond(to: request.id, decision: .accept)
+                }
+            }
+
+            return cell
+        }
+
         let cell = tableView.dequeueReusableCell(
             withIdentifier: "FriendCell",
             for: indexPath
         )
 
+        let friend = viewModel.friends[indexPath.row]
         var content = cell.defaultContentConfiguration()
-
-        if indexPath.section == 0 {
-            let request = viewModel.incomingRequests[indexPath.row]
-            content.text = request.senderNickname
-            content.secondaryText = "请求添加你为好友"
-        } else {
-            let friend = viewModel.friends[indexPath.row]
-            content.text = friend.nickname
-            content.secondaryText = friend.friendsSince.formatted(
-                date: .abbreviated,
-                time: .omitted
-            )
-        }
-
+        content.image = UIImage(
+            systemName: "person.crop.circle",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 30)
+        )
+        content.imageProperties.tintColor = .systemIndigo
+        content.text = friend.nickname
+        content.secondaryText = friend.friendsSince.formatted(
+            date: .abbreviated,
+            time: .omitted
+        )
         cell.contentConfiguration = content
+
         return cell
     }
 
@@ -154,5 +185,32 @@ final class FriendListViewController: UITableViewController {
         } catch {
             navigationItem.prompt = error.localizedDescription
         }
+    }
+
+    private func respond(
+        to id: UUID,
+        decision: FriendRequestDecision
+    ) async {
+        guard tableView.isUserInteractionEnabled else { return }
+
+        tableView.isUserInteractionEnabled = false
+
+        defer {
+            tableView.isUserInteractionEnabled = true
+        }
+
+        do {
+            try await viewModel.respond(to: id, decision: decision)
+        } catch is CancellationError {
+            return
+        } catch {
+            navigationItem.prompt = error.localizedDescription
+            return
+        }
+
+        navigationItem.prompt = decision == .accept ? "已接受好友申请" : "已拒绝好友申请"
+
+        tableView.reloadData()
+        await loadFriends()
     }
 }
