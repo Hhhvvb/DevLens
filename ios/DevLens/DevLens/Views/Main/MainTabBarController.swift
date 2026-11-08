@@ -4,15 +4,18 @@ final class MainTabBarController: UITabBarController {
     private let user: AuthUser
     private let conversationService: any ConversationService & GenerationService
     private let profileService: any ProfileService
+    private let friendService: any FriendService
 
     init(
         user: AuthUser,
         conversationService: any ConversationService & GenerationService,
-        profileService: any ProfileService
+        profileService: any ProfileService,
+        friendService: any FriendService
     ) {
         self.user = user
         self.conversationService = conversationService
         self.profileService = profileService
+        self.friendService = friendService
 
         super.init(nibName: nil, bundle: nil)
     }
@@ -32,6 +35,21 @@ final class MainTabBarController: UITabBarController {
         let profile = ProfileViewController(
             user: user,
             profileService: profileService
+        )
+
+        let friendService = self.friendService
+
+        profile.navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "好友",
+            primaryAction: UIAction { [weak profile] _ in
+                let viewModel = FriendListViewModel(service: friendService)
+                let controller = FriendListViewController(viewModel: viewModel)
+
+                profile?.navigationController?.pushViewController(
+                    controller,
+                    animated: true
+                )
+            }
         )
 
         let conversationNavigation = UINavigationController(

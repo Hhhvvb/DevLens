@@ -387,7 +387,7 @@ def send_friend_request(
             ) from error
 
     return {
-        "message": "已发送好友请求。"
+        "message": "申请已处理。符合条件时，对方会在好友申请列表看到。"
     }
 
 @app.get(

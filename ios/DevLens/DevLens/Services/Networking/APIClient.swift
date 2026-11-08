@@ -76,7 +76,8 @@ final class APIClient:
     GenerationService,
     ConversationService,
     AuthService,
-    ProfileService {
+    ProfileService,
+    FriendService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -664,5 +665,35 @@ final class APIClient:
 
             return (data, http)
         }
+    }
+
+    func listFriends() async throws -> [FriendSummary] {
+        return try await sendJSONRequest(
+            path: "/v1/friends",
+            method: "GET",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        return try await sendJSONRequest(
+            path: "/v1/friend-requests/incoming",
+            method: "GET",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func sendFriendRequest(
+        email: String
+    ) async throws -> FriendRequestReceipt {
+        let input = SendFriendRequest(email: email)
+        let body = try JSONEncoder().encode(input)
+
+        return try await sendJSONRequest(
+            path: "/v1/friend-requests",
+            method: "POST",
+            body: body,
+            accessToken: requireAccessToken()
+        )
     }
 }
