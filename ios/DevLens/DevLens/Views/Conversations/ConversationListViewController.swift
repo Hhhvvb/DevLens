@@ -268,6 +268,8 @@ final class ConversationListViewController: UITableViewController {
             return self.saveConversation(conversation)
         }
 
+        controller.hidesBottomBarWhenPushed = true
+
         navigationController?.pushViewController(
             controller,
             animated: true

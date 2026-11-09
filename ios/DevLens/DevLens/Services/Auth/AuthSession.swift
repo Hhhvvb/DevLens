@@ -46,6 +46,14 @@ final class AuthSession {
         state = .signedIn(response.user)
     }
 
+    func signOut() async throws {
+        try await tokenStore.delete()
+
+        accessToken = nil
+        accessTokenExpiresAt = nil
+        state = .signedOut
+    }
+
     func restore() async {
         guard !isRestoring else {
             return

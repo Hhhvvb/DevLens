@@ -76,7 +76,8 @@ final class APIClient:
     GenerationService,
     ConversationService,
     AuthService,
-    ProfileService {
+    ProfileService,
+    FriendService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -663,6 +664,84 @@ final class APIClient:
             }
 
             return (data, http)
+        }
+    }
+
+    func listFriends() async throws -> [FriendSummary] {
+        return try await sendJSONRequest(
+            path: "/v1/friends",
+            method: "GET",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func listIncomingFriendRequests() async throws -> [IncomingFriendRequest] {
+        return try await sendJSONRequest(
+            path: "/v1/friend-requests/incoming",
+            method: "GET",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func sendFriendRequest(
+        email: String
+    ) async throws -> FriendRequestReceipt {
+        let input = SendFriendRequest(email: email)
+        let body = try JSONEncoder().encode(input)
+
+        return try await sendJSONRequest(
+            path: "/v1/friend-requests",
+            method: "POST",
+            body: body,
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func responseToFriendRequest(
+        id: UUID,
+        decision: FriendRequestDecision
+    ) async throws {
+        let path = "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)"
+
+        guard let url = URL(string: "\(baseURL)\(path)") else {
+            throw APIError.invalidURL
+        }
+
+        let accessToken = try requireAccessToken()
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue(
+            "Bearer \(accessToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Task.checkCancellation()
+
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse
+            }
+
+            guard http.statusCode == 204 else {
+                let failure = try? JSONDecoder().decode(
+                    APIErrorResponse.self,
+                    from: data
+                )
+
+                throw APIError.httpFailure(
+                    statusCode: http.statusCode,
+                    message: failure?.detail ?? "无法处理好友申请。"
+                )
+            }
+        } catch let error as URLError {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+
+            throw APIError.networkError(error.code)
         }
     }
 }

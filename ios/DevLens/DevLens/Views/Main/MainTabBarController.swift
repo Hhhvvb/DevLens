@@ -4,15 +4,21 @@ final class MainTabBarController: UITabBarController {
     private let user: AuthUser
     private let conversationService: any ConversationService & GenerationService
     private let profileService: any ProfileService
+    private let friendService: any FriendService
+    private let signOut: @MainActor () async throws -> Void
 
     init(
         user: AuthUser,
         conversationService: any ConversationService & GenerationService,
-        profileService: any ProfileService
+        profileService: any ProfileService,
+        friendService: any FriendService,
+        signOut: @escaping @MainActor () async throws -> Void
     ) {
         self.user = user
         self.conversationService = conversationService
         self.profileService = profileService
+        self.friendService = friendService
+        self.signOut = signOut
 
         super.init(nibName: nil, bundle: nil)
     }
@@ -33,6 +39,22 @@ final class MainTabBarController: UITabBarController {
             user: user,
             profileService: profileService
         )
+
+        let friendService = self.friendService
+
+        profile.onShowFriends = { [weak profile] in
+            let viewModel = FriendListViewModel(service: friendService)
+            let controller = FriendListViewController(viewModel: viewModel)
+
+            controller.hidesBottomBarWhenPushed = true
+
+            profile?.navigationController?.pushViewController(
+                controller,
+                animated: true
+            )
+        }
+
+        profile.onSignOut = self.signOut
 
         let conversationNavigation = UINavigationController(
             rootViewController: conversations

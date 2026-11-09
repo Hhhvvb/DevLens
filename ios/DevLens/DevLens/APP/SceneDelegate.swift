@@ -64,7 +64,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             window?.rootViewController = MainTabBarController(
                 user: user,
                 conversationService: conversationClient,
-                profileService: conversationClient
+                profileService: conversationClient,
+                friendService: conversationClient,
+                signOut: authSession.signOut
             )
 
         case .failure(let message):
