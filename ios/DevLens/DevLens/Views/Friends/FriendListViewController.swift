@@ -2,6 +2,7 @@ import UIKit
 
 final class FriendListViewController: UITableViewController {
     private let viewModel: FriendListViewModel
+    private let addFriendHeader = AddFriendHeaderView()
 
     init(viewModel: FriendListViewModel) {
         self.viewModel = viewModel
@@ -16,12 +17,16 @@ final class FriendListViewController: UITableViewController {
         super.viewDidLoad()
 
         title = "好友"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "添加",
-            primaryAction: UIAction { [weak self] _ in
-                self?.showAddFriendPrompt()
-            }
+        addFriendHeader.onAddFriend = { [weak self] in
+            self?.showAddFriendPrompt()
+        }
+
+        addFriendHeader.frame.size = CGSize(
+            width: tableView.bounds.width,
+            height: 88
         )
+        tableView.tableHeaderView = addFriendHeader
+
         tableView.allowsSelection = false
         tableView.register(
             UITableViewCell.self,
@@ -45,13 +50,7 @@ final class FriendListViewController: UITableViewController {
             try await viewModel.load()
             tableView.reloadData()
 
-            if viewModel.friends.isEmpty && viewModel.incomingRequests.isEmpty {
-                var configuration = UIContentUnavailableConfiguration.empty()
-                configuration.text = "还没有好友或收到的申请"
-                contentUnavailableConfiguration = configuration
-            } else {
-                contentUnavailableConfiguration = nil
-            }
+            contentUnavailableConfiguration = nil
         } catch is CancellationError {
             return
         } catch {
@@ -70,7 +69,7 @@ final class FriendListViewController: UITableViewController {
             return viewModel.incomingRequests.count
         }
 
-        return viewModel.friends.count
+        return max(1, viewModel.friends.count)
     }
 
     override func tableView(
@@ -108,6 +107,14 @@ final class FriendListViewController: UITableViewController {
             withIdentifier: "FriendCell",
             for: indexPath
         )
+
+        if viewModel.friends.isEmpty {
+            var content = cell.defaultContentConfiguration()
+            content.text = "还没有好友"
+            content.secondaryText = "可以从上方发送好友申请"
+            cell.contentConfiguration = content
+            return cell
+        }
 
         let friend = viewModel.friends[indexPath.row]
         var content = cell.defaultContentConfiguration()
@@ -172,10 +179,10 @@ final class FriendListViewController: UITableViewController {
     }
 
     private func submitFriendRequest(email: String) async {
-        navigationItem.rightBarButtonItem?.isEnabled = false
+        addFriendHeader.setSending(true)
 
         defer {
-            navigationItem.rightBarButtonItem?.isEnabled = true
+            addFriendHeader.setSending(false)
         }
 
         do {

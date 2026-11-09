@@ -6,6 +6,9 @@ final class ProfileViewController: UITableViewController {
     private let viewModel: ProfileViewModel
     private var profileHeaderView: ProfileHeaderView?
     private var isChangingAvatar = false
+    var onShowFriends: (() -> Void)?
+    var onSignOut: (@MainActor () async throws -> Void)?
+    private var isSigningOut = false
 
     init(user: AuthUser, profileService: any ProfileService) {
         self.viewModel = ProfileViewModel(
@@ -24,7 +27,6 @@ final class ProfileViewController: UITableViewController {
         super.viewDidLoad()
 
         title = "我的"
-        tableView.allowsSelection = false
 
         tableView.register(
             UITableViewCell.self,
@@ -72,7 +74,7 @@ final class ProfileViewController: UITableViewController {
         _ tableView: UITableView,
         numberOfRowsInSection section: Int
     ) -> Int {
-        return 2
+        return section == 0 ? 2 : 1
     }
 
     override func tableView(
@@ -85,18 +87,33 @@ final class ProfileViewController: UITableViewController {
         )
 
         var content = cell.defaultContentConfiguration()
+        cell.accessoryType = .none
+        cell.selectionStyle = .default
 
-        if indexPath.row == 0 {
-            content.text = "昵称"
-            content.secondaryText = viewModel.nickname
-        } else {
-            content.text = "邮箱"
-            content.secondaryText = viewModel.email
+        switch indexPath.section {
+        case 0:
+            if indexPath.row == 0 {
+                content.text = "昵称"
+                content.secondaryText = viewModel.nickname
+            } else {
+                content.text = "邮箱"
+                content.secondaryText = viewModel.email
+            }
+
+        case 1:
+            content.image = UIImage(systemName: "person.2")
+            content.imageProperties.tintColor = .systemIndigo
+            content.text = "好友"
+            cell.accessoryType = .disclosureIndicator
+
+        default:
+            content.text = "退出登录"
+            content.textProperties.color = .systemRed
+            content.textProperties.alignment = .center
         }
 
         content.secondaryTextProperties.numberOfLines = 0
         cell.contentConfiguration = content
-
         return cell
     }
 
@@ -104,7 +121,35 @@ final class ProfileViewController: UITableViewController {
         _ tableView: UITableView,
         titleForHeaderInSection section: Int
     ) -> String? {
-        return "个人资料"
+        return section == 0 ? "个人资料" : nil
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        return 3
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        willSelectRowAt indexPath: IndexPath
+    ) -> IndexPath? {
+        guard indexPath.section != 0, !isSigningOut else {
+            return nil
+        }
+
+        return indexPath
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        didSelectRowAt indexPath: IndexPath
+    ) {
+        tableView.deselectRow(at: indexPath, animated: true)
+
+        if indexPath.section == 1 {
+            onShowFriends?()
+        } else if indexPath.section == 2 {
+            showSignOutConfirmation()
+        }
     }
 
     private func showAvatarPicker() {
@@ -119,6 +164,38 @@ final class ProfileViewController: UITableViewController {
         picker.delegate = self
 
         present(picker, animated: true)
+    }
+
+    private func showSignOutConfirmation() {
+        let alert = UIAlertController(
+            title: "退出登录？",
+            message: "退出后将返回登录页。",
+            preferredStyle: .alert
+        )
+
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(
+            UIAlertAction(title: "退出登录", style: .destructive) { [weak self] _ in
+                Task { [weak self] in
+                    await self?.performSignOut()
+                }
+            }
+        )
+
+        present(alert, animated: true)
+    }
+
+    private func performSignOut() async {
+        guard !isSigningOut, let onSignOut else { return }
+
+        isSigningOut = true
+        defer { isSigningOut = false }
+
+        do {
+            try await onSignOut()
+        } catch {
+            navigationItem.prompt = error.localizedDescription
+        }
     }
 }
 

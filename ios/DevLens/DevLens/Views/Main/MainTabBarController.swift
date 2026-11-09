@@ -40,44 +40,21 @@ final class MainTabBarController: UITabBarController {
             profileService: profileService
         )
 
-        let signOut = self.signOut
-
-        profile.navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "退出",
-            primaryAction: UIAction { [weak profile] _ in
-                Task { @MainActor [weak profile] in
-                    guard let profile else { return }
-
-                    profile.navigationItem.leftBarButtonItem?.isEnabled = false
-
-                    defer {
-                        profile.navigationItem.leftBarButtonItem?.isEnabled = true
-                    }
-
-                    do {
-                        try await signOut()
-                    } catch {
-                        profile.navigationItem.prompt = error.localizedDescription
-                    }
-                }
-
-            }
-        )
-
         let friendService = self.friendService
 
-        profile.navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "好友",
-            primaryAction: UIAction { [weak profile] _ in
-                let viewModel = FriendListViewModel(service: friendService)
-                let controller = FriendListViewController(viewModel: viewModel)
+        profile.onShowFriends = { [weak profile] in
+            let viewModel = FriendListViewModel(service: friendService)
+            let controller = FriendListViewController(viewModel: viewModel)
 
-                profile?.navigationController?.pushViewController(
-                    controller,
-                    animated: true
-                )
-            }
-        )
+            controller.hidesBottomBarWhenPushed = true
+
+            profile?.navigationController?.pushViewController(
+                controller,
+                animated: true
+            )
+        }
+
+        profile.onSignOut = self.signOut
 
         let conversationNavigation = UINavigationController(
             rootViewController: conversations
