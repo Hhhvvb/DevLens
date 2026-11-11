@@ -1,10 +1,10 @@
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from conversation_models import ( ConversationMessage, ConversationSummary, CreateConversationRequest )
+from conversation_models import ( IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
 
 class ConversationStore:
     def __init__(self, database_path: Path):
@@ -68,6 +68,38 @@ class ConversationStore:
                     one_owner_per_conversation
                 ON conversation_members (conversation_id)
                 WHERE role = 'owner'
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_invitations (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    inviter_id TEXT NOT NULL,
+                    recipient_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN (
+                            'pending', 'accepted', 'declined',
+                            'revoked', 'expired'
+                        )),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    responded_at TEXT,
+                    CHECK (inviter_id <> recipient_id)
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    one_pending_invitation_per_recipient
+                ON conversation_invitations (
+                    conversation_id,
+                    recipient_id
+                )
+                WHERE status = 'pending'
                 """
             )
 
@@ -237,3 +269,257 @@ class ConversationStore:
                 for row in rows
             ]
 
+    def invite_friend(
+        self,
+        conversation_id: UUID,
+        inviter_id: UUID,
+        recipient_id: UUID,
+    ) -> None:
+        conversation = str(conversation_id)
+        inviter = str(inviter_id)
+        recipient = str(recipient_id)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            owner = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_members
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                  AND role = 'owner'
+                """,
+                (conversation, inviter)
+            )
+
+            if owner is None:
+                raise PermissionError("会话不存在或无权邀请。")
+
+            if inviter == recipient:
+                raise ValueError("不能邀请自己。")
+
+
+            first_user_id, second_user_id = sorted((inviter, recipient))
+
+            friendship = connection.execute(
+                """
+                SELECT 1
+                FROM friendships
+                WHERE first_user_id = ?
+                  AND second_user_id = ?
+                """,
+                (first_user_id, second_user_id),
+            ).fetchone()
+
+            if friendship is None:
+                raise ValueError("只能邀请好友加入会话。")
+
+            member = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_members
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                """,
+            ).fetchone()
+
+            if member is not None:
+                raise ValueError("该用户已是会话成员。")
+
+            now = datetime.now(timezone.utc)
+            created_at = now.isoformat()
+            expires_at = (now + timedelta(days=7)).isoformat()
+
+            connection.execute(
+                """
+                UPDATE conversation_invitations
+                SET status = 'expired'
+                WHERE conversation_id = ?
+                  AND recipient_id = ?
+                  AND status = 'pending'
+                  AND expires_at <= ?
+                """,
+                (conversation, recipient, created_at)
+            )
+
+            connection.execute(
+                """
+                INSERT INTO conversation_invitations (
+                    id, conversation_id, inviter_id, recipient_id,
+                    status, created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(conversation_id, recipient_id)
+                    WHERE status = 'pending'
+                DO NOTHING
+                """,
+                (
+                    str(uuid4()),
+                    conversation,
+                    inviter,
+                    recipient,
+                    created_at,
+                    expires_at,
+                ),
+            )
+
+            connection.commit()
+
+    def list_incoming_invitations(
+        self,
+        recipient_id: UUID,
+    ) -> list[IncomingConversationInvitation]:
+        now = datetime.now(timezone.utc).isoformat()
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+
+            rows = connection.execute(
+                """
+                SELECT
+                    i.id,
+                    c.title AS conversation_title,
+                    u.nickname AS inviter_nickname,
+                    i.created_at,
+                    i.expires_at
+                FROM conversation_invitations AS i
+                JOIN conversations AS c ON c.id = i.conversation_id
+                JOIN users AS u ON u.id = i.inviter_id
+                WHERE i.recipient_id = ?
+                  AND i.status = 'pending'
+                  AND i.expires_at > ?
+                ORDER BY i.created_at DESC, i.id ASC
+                """,
+                (str(recipient_id), now),
+            ).fetchall()
+
+            return [
+                IncomingConversationInvitation.model_validate(dict(row))
+                for row in rows
+            ]
+
+    def accept_invitation(
+        self,
+        invitation_id: UUID,
+        recipient_id: UUID,
+    ) -> UUID | None:
+        recipient = str(recipient_id)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+
+            invitation = connection.execute(
+                """
+                SELECT i.conversation_id, i.inviter_id, i.status, i.expires_at
+                FROM conversation_invitations AS i
+                JOIN conversations AS c ON c.id = i.conversation_id
+                WHERE i.id = ? AND i.recipient_id = ?
+                """,
+                (str(invitation_id), recipient),
+            ).fetchone()
+
+            if invitation is None:
+                return None
+
+            conversation = invitation["conversation_id"]
+            conversation_id = UUID(conversation)
+
+            if invitation["status"] == "accepted":
+                member = connection.execute(
+                    """
+                    SELECT 1
+                    FROM conversation_members
+                    WHERE conversation_id = ? AND user_id = ?
+                    """,
+                    (conversation, recipient)
+                ).fetchone()
+
+                return conversation_id if member is not None else None
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            if invitation["status"] != "pending" or invitation["expires_at"] <= now:
+                return None
+
+            inviter = invitation["inviter_id"]
+
+            owner = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_members
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                  AND role = 'owner'
+                """,
+                (conversation, inviter),
+            ).fetchone()
+
+            first_user_id, second_user_id = sorted((inviter, recipient))
+            friendship = connection.execute(
+                """
+                SELECT 1
+                FROM friendships
+                WHERE first_user_id = ? AND second_user_id = ?
+                """,
+                (first_user_id, second_user_id),
+            ).fetchone()
+
+            if owner is None or friendship is None:
+                return None
+
+            connection.execute(
+                """
+                INSERT INTO conversation_members (
+                    conversation_id, user_id, role, joined_at
+                )
+                VALUES (?, ?, 'member', ?)
+                ON CONFLICT(conversation_id, user_id) DO NOTHING
+                """,
+                (conversation, recipient, now),
+            )
+
+            connection.execute(
+                """
+                UPDATE conversation_invitations
+                SET status = 'accepted', responded_at = ?
+                WHERE id = ?
+                """,
+                (now, str(invitation_id)),
+            )
+
+            connection.commit()
+            return conversation_id
+
+    def decline_invitation(
+        self,
+        invitation_id: UUID,
+        recipient_id: UUID,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE conversation_invitations
+                SET
+                    status = 'declined',
+                    responded_at = COALESCE(responded_at, ?)
+                WHERE id = ?
+                AND recipient_id = ?
+                AND (
+                    (status = 'pending' AND expires_at > ?)
+                    OR status = 'declined'
+                )
+                """,
+                (
+                    now,
+                    str(invitation_id),
+                    str(recipient_id),
+                    now,
+                ),
+            )
+
+            connection.commit()
+            return cursor.rowcount == 1

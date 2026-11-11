@@ -2,14 +2,14 @@ import UIKit
 
 final class MainTabBarController: UITabBarController {
     private let user: AuthUser
-    private let conversationService: any ConversationService & GenerationService
+    private let conversationService: any ConversationService & GenerationService & ConversationInvitationService
     private let profileService: any ProfileService
     private let friendService: any FriendService
     private let signOut: @MainActor () async throws -> Void
 
     init(
         user: AuthUser,
-        conversationService: any ConversationService & GenerationService,
+        conversationService: any ConversationService & GenerationService & ConversationInvitationService,
         profileService: any ProfileService,
         friendService: any FriendService,
         signOut: @escaping @MainActor () async throws -> Void

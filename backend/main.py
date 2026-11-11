@@ -18,7 +18,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from generation_models import ( GenerationInput, GenerationSnapshot, GenerationState, )
 from generation_store import ( GenerationConflictError, GenerationStore, )
-from conversation_models import ( CreateConversationRequest, ConversationSummary, ConversationMessage, )
+from conversation_models import ( IncomingConversationInvitation, CreateConversationInvitationRequest, CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
 from user_store import UserStore
 from friend_store import FriendStore
@@ -841,6 +841,89 @@ async def create_conversation(
             status_code=422,
             detail=str(error),
         ) from error
+
+@app.post(
+    "/v1/conversations/{conversation_id}/invitations",
+    status_code=204,
+)
+def invite_friend_to_conversation(
+    conversation_id: UUID,
+    body: CreateConversationInvitationRequest,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    store = request.app.state.conversation_store
+
+    try:
+        store.invite_friend(
+            conversation_id=conversation_id,
+            inviter_id=user.id,
+            recipient_id=body.recipient_id,
+        )
+    except PermissionError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return Response(status_code=204)
+
+@app.get(
+    "/v1/conversation-invitations/incoming",
+    response_model=list[IncomingConversationInvitation],
+)
+def list_incoming_conversation_invitations(
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> list[IncomingConversationInvitation]:
+    store = request.app.state.conversation_store
+    return store.list_incoming_invitations(user.id)
+
+@app.post(
+    "/v1/conversation-invitations/{invitation_id}/accept",
+    response_model=dict[str, UUID],
+)
+def accept_conversation_invitation(
+    invitation_id: UUID,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> dict[str, UUID]:
+    store = request.app.state.conversation_store
+    conversation_id = store.accept_invitation(
+        invitation_id=invitation_id,
+        recipient_id=user.id,
+    )
+
+    if conversation_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话邀请不存在或已无法接受。",
+        )
+
+    return {"conversation_id": conversation_id}
+
+@app.post(
+    "/v1/conversation-invitations/{invitation_id}/decline",
+    status_code=204,
+)
+def decline_conversation_invitation(
+    invitation_id: UUID,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    store = request.app.state.conversation_store
+
+    declined = store.decline_invitation(
+        invitation_id=invitation_id,
+        recipient_id=user.id,
+    )
+
+    if not declined:
+        raise HTTPException(
+            status_code=404,
+            detail="会话邀请不存在或已无法拒绝。",
+        )
+
+    return Response(status_code=204)
 
 @app.get(
     "/v1/conversations",

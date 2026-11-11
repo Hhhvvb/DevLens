@@ -5,7 +5,7 @@ final class ConversationListViewController: UITableViewController {
     private var store: ConversationStore?
     private var isCreating = false
     private var saveTask: Task<Void, Never>?
-    private let conversationService: any ConversationService & GenerationService
+    private let conversationService: any ConversationService & GenerationService & ConversationInvitationService
     private var pendingConversation: Conversation?
     private var serverOnlyConversationIDs: Set<UUID> = []
     private var isOpeningConversation = false
@@ -14,7 +14,7 @@ final class ConversationListViewController: UITableViewController {
 
     init(
         userID: UUID,
-        conversationService: any ConversationService & GenerationService
+        conversationService: any ConversationService & GenerationService & ConversationInvitationService
     ) {
         self.userID = userID
         self.conversationService = conversationService
@@ -209,17 +209,37 @@ final class ConversationListViewController: UITableViewController {
         tableView.backgroundView = label
     }
 
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        2
+    }
+
     override func tableView(
         _ tableView: UITableView,
         numberOfRowsInSection section: Int
     ) -> Int {
-        conversations.count
+        if section == 0 {
+            return 1
+        }
+        return conversations.count
     }
 
     override func tableView(
         _ tableView: UITableView,
         cellForRowAt indexPath: IndexPath
     ) -> UITableViewCell {
+        if indexPath.section == 0 {
+            let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+
+            var content = cell.defaultContentConfiguration()
+            content.text = "会话邀请"
+            content.image = UIImage(systemName: "envelope")
+            content.imageProperties.tintColor = .systemIndigo
+
+            cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            return cell
+        }
+
         let cell = tableView.dequeueReusableCell(
             withIdentifier: "ConversationCell"
         ) ?? UITableViewCell(
@@ -247,6 +267,11 @@ final class ConversationListViewController: UITableViewController {
         didSelectRowAt indexPath: IndexPath
     ) {
         tableView.deselectRow(at: indexPath, animated: true)
+
+        if indexPath.section == 0 {
+            showConversationInvitations()
+            return
+        }
 
         let conversation = conversations[indexPath.row]
         openConversation(conversation)
@@ -444,6 +469,8 @@ final class ConversationListViewController: UITableViewController {
                 var restored = conversation
                 restored.messages = messages
 
+                restored.activeGeneration = nil
+
                 if let recovery {
                     let snapshot = recovery.snapshot
 
@@ -497,5 +524,39 @@ final class ConversationListViewController: UITableViewController {
         Task { [weak self] in
             await self?.loadServerConversations()
         }
+    }
+
+    private func showConversationInvitations() {
+        let viewModel = ConversationInvitationViewModel(service: conversationService)
+        let controller = ConversationInvitationListViewController(viewModel: viewModel)
+
+        controller.hidesBottomBarWhenPushed = true
+
+        controller.onAcceptConversation = { [weak self, weak controller] id in
+            guard let self,
+                  let controller,
+                  let navigation = self.navigationController,
+                  navigation.topViewController === controller else {
+                return
+            }
+
+            navigation.popViewController(animated: false)
+
+            Task { [weak self] in
+                guard let self else { return }
+
+                await self.loadServerConversations()
+
+                guard self.navigationController?.topViewController === self,
+                      let conversation = self.conversations.first(where: { $0.id == id }) else {
+                    return
+                }
+
+                self.serverOnlyConversationIDs.insert(id)
+                self.openConversation(conversation)
+            }
+        }
+
+        navigationController?.pushViewController(controller, animated: true)
     }
 }

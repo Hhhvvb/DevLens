@@ -77,7 +77,8 @@ final class APIClient:
     ConversationService,
     AuthService,
     ProfileService,
-    FriendService {
+    FriendService,
+    ConversationInvitationService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -667,6 +668,47 @@ final class APIClient:
         }
     }
 
+    func sendConversationInvitation(
+        conversationID: UUID,
+        recipientID: UUID
+    ) async throws {
+        let input = CreateConversationInvitationRequest(
+            recipientID: recipientID
+        )
+        let body = try JSONEncoder().encode(input)
+
+        try await postExpectingNoContent(
+            path: "/v1/conversations/\(conversationID.uuidString)/invitations",
+            body: body,
+            failureMessage: "无法发送会话邀请。"
+        )
+    }
+
+    func listIncomingConversationInvitations() async throws -> [IncomingConversationInvitation] {
+        return try await sendJSONRequest(
+            path: "/v1/conversation-invitations/incoming",
+            method: "GET",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func acceptConversationInvitation(
+        id: UUID
+    ) async throws -> AcceptConversationInvitationResponse {
+        return try await sendJSONRequest(
+            path: "/v1/conversation-invitations/\(id.uuidString)/accept",
+            method: "POST",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func declineConversationInvitation(id: UUID) async throws {
+        try await postExpectingNoContent(
+            path: "/v1/conversation-invitations/\(id.uuidString)/decline",
+            failureMessage: "无法拒绝会话邀请。"
+        )
+    }
+
     func listFriends() async throws -> [FriendSummary] {
         return try await sendJSONRequest(
             path: "/v1/friends",
@@ -701,8 +743,17 @@ final class APIClient:
         id: UUID,
         decision: FriendRequestDecision
     ) async throws {
-        let path = "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)"
+        try await postExpectingNoContent(
+            path: "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)",
+            failureMessage: "无法处理好友申请。"
+        )
+    }
 
+    private func postExpectingNoContent(
+        path: String,
+        body: Data? = nil,
+        failureMessage: String
+    ) async throws {
         guard let url = URL(string: "\(baseURL)\(path)") else {
             throw APIError.invalidURL
         }
@@ -711,11 +762,19 @@ final class APIClient:
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.httpBody = body
         request.timeoutInterval = 20
         request.setValue(
             "Bearer \(accessToken)",
             forHTTPHeaderField: "Authorization"
         )
+
+        if body != nil {
+            request.setValue(
+                "application/json",
+                forHTTPHeaderField: "Content-Type"
+            )
+        }
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -733,7 +792,7 @@ final class APIClient:
 
                 throw APIError.httpFailure(
                     statusCode: http.statusCode,
-                    message: failure?.detail ?? "无法处理好友申请。"
+                    message: failure?.detail ?? failureMessage
                 )
             }
         } catch let error as URLError {

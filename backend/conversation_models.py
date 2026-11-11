@@ -34,3 +34,13 @@ class ConversationMessage(BaseModel):
     is_excluded_from_context: bool = False
 
     created_at: datetime
+
+class CreateConversationInvitationRequest(BaseModel):
+    recipient_id: UUID
+
+class IncomingConversationInvitation(BaseModel):
+    id: UUID
+    conversation_title: str
+    inviter_nickname: str
+    created_at: datetime
+    expires_at: datetime
