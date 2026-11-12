@@ -125,9 +125,18 @@ class ConversationStore:
 
             row = connection.execute(
                 """
-                SELECT id, title, created_at, updated_at
-                FROM conversations
-                WHERE id = ?
+                SELECT
+                    c.id,
+                    c.title,
+                    c.created_at,
+                    c.updated_at,
+                    (
+                        SELECT COUNT(*)
+                        FROM conversation_members AS member
+                        WHERE member.conversation_id = c.id
+                    ) AS member_count
+                FROM conversations AS c
+                WHERE c.id = ?
                 """,
                 (str(request.id),),
             ).fetchone()
@@ -188,6 +197,7 @@ class ConversationStore:
                 title=title,
                 created_at=now,
                 updated_at=now,
+                member_count=1,
             )
 
             connection.commit()
@@ -206,7 +216,12 @@ class ConversationStore:
 
             rows = connection.execute(
                 """
-                SELECT c.id, c.title, c.created_at, c.updated_at
+                SELECT c.id, c.title, c.created_at, c.updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM conversation_members AS member
+                    WHERE member.conversation_id = c.id
+                ) AS member_count
                 FROM conversation_members AS m
                 JOIN conversations AS c ON c.id = m.conversation_id
                 WHERE m.user_id = ?
@@ -232,7 +247,12 @@ class ConversationStore:
 
             row = connection.execute(
                 """
-                SELECT c.id, c.title, c.created_at, c.updated_at
+                SELECT c.id, c.title, c.created_at, c.updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM conversation_members AS member
+                    WHERE member.conversation_id = c.id
+                ) AS member_count
                 FROM conversations AS c
                 JOIN conversation_members AS m
                     ON m.conversation_id = c.id
@@ -291,7 +311,7 @@ class ConversationStore:
                   AND role = 'owner'
                 """,
                 (conversation, inviter)
-            )
+            ).fetchone()
 
             if owner is None:
                 raise PermissionError("会话不存在或无权邀请。")
@@ -322,6 +342,7 @@ class ConversationStore:
                 WHERE conversation_id = ?
                   AND user_id = ?
                 """,
+                (conversation, recipient)
             ).fetchone()
 
             if member is not None:

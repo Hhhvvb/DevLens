@@ -19,6 +19,7 @@ class ConversationSummary(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    member_count: int = Field(ge=1)
 
 class ConversationMessage(BaseModel):
     id: UUID

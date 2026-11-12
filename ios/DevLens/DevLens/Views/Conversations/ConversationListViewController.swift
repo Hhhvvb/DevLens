@@ -12,6 +12,7 @@ final class ConversationListViewController: UITableViewController {
     private var isLoadingServerConversations = false
     private let userID: UUID
     private let friendService: any FriendService
+    private var memberCounts: [UUID: Int] = [:]
 
     init(
         userID: UUID,
@@ -168,6 +169,7 @@ final class ConversationListViewController: UITableViewController {
             }
 
             try await store.upsert(conversation)
+            memberCounts[summary.id] = summary.memberCount
 
             conversations.removeAll {
                 $0.id == conversation.id
@@ -213,7 +215,7 @@ final class ConversationListViewController: UITableViewController {
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
-        2
+        3
     }
 
     override func tableView(
@@ -223,7 +225,7 @@ final class ConversationListViewController: UITableViewController {
         if section == 0 {
             return 1
         }
-        return conversations.count
+        return conversationsForSection(section).count
     }
 
     override func tableView(
@@ -250,7 +252,7 @@ final class ConversationListViewController: UITableViewController {
             reuseIdentifier: "ConversationCell"
         )
 
-        let conversation = conversations[indexPath.row]
+        let conversation = conversationsForSection(indexPath.section)[indexPath.row]
 
         var content = cell.defaultContentConfiguration()
         content.text = conversation.title
@@ -276,8 +278,19 @@ final class ConversationListViewController: UITableViewController {
             return
         }
 
-        let conversation = conversations[indexPath.row]
+        let conversation = conversationsForSection(indexPath.section)[indexPath.row]
         openConversation(conversation)
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        titleForHeaderInSection section: Int
+    ) -> String? {
+        switch section {
+        case 1: return "个人"
+        case 2: return "共享"
+        default: return nil
+        }
     }
 
     private func showConversation(_ conversation: Conversation) {
@@ -405,6 +418,7 @@ final class ConversationListViewController: UITableViewController {
 
         do {
             let summaries = try await conversationService.listConversations()
+            memberCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.memberCount) })
 
             for summary in summaries {
                 let alreadyExists = conversations.contains {
@@ -577,5 +591,16 @@ final class ConversationListViewController: UITableViewController {
         }
 
         navigationController?.pushViewController(controller, animated: true)
+    }
+
+    private func conversationsForSection(_ section: Int) -> [Conversation] {
+        switch section {
+        case 1:
+            return conversations.filter { (memberCounts[$0.id] ?? 1) == 1 }
+        case 2:
+            return conversations.filter { (memberCounts[$0.id] ?? 1) > 1}
+        default:
+            return []
+        }
     }
 }
