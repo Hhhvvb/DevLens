@@ -11,13 +11,16 @@ final class ConversationListViewController: UITableViewController {
     private var isOpeningConversation = false
     private var isLoadingServerConversations = false
     private let userID: UUID
+    private let friendService: any FriendService
 
     init(
         userID: UUID,
-        conversationService: any ConversationService & GenerationService & ConversationInvitationService
+        conversationService: any ConversationService & GenerationService & ConversationInvitationService,
+        friendService: any FriendService
     ) {
         self.userID = userID
         self.conversationService = conversationService
+        self.friendService = friendService
         super.init(style: .insetGrouped)
     }
 
@@ -282,6 +285,22 @@ final class ConversationListViewController: UITableViewController {
             conversation: conversation,
             apiClient: conversationService
         )
+
+        controller.onInviteFriends = { [weak self] conversationID in
+            guard let self, let navigation = self.navigationController else {
+                return
+            }
+
+            let viewModel = InviteFriendViewModel(
+                conversationID: conversationID,
+                friendService: self.friendService,
+                invitationService: self.conversationService
+            )
+            let invitePage = InviteFriendViewController(viewModel: viewModel)
+            invitePage.hidesBottomBarWhenPushed = true
+
+            navigation.pushViewController(invitePage, animated: true)
+        }
 
         controller.onSaveConversation = { [weak self] conversation in
             guard let self else {

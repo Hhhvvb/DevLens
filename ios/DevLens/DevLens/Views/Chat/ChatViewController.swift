@@ -25,6 +25,8 @@ final class ChatViewController:
     private var shouldResumeAfterScrolling = false
     private let latestButton = UIButton(type: .system)
     var onSaveConversation: ((Conversation) -> Task<Void, Error>)?
+    var onInviteFriends: ((UUID) -> Void)?
+    private var generationButton: UIBarButtonItem?
     private var lastSaveAt: Date?
     private var isPageVisible = false
 
@@ -91,7 +93,7 @@ final class ChatViewController:
         dismissTap.cancelsTouchesInView = false
         collectionView.addGestureRecognizer(dismissTap)
 
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let generationButton = UIBarButtonItem(
             title: "停止",
             primaryAction: UIAction { [weak self] _ in
                 guard let self else {
@@ -105,6 +107,23 @@ final class ChatViewController:
                 }
             }
         )
+
+        self.generationButton = generationButton
+
+        if onInviteFriends != nil {
+            let inviteButton = UIBarButtonItem(
+                image: UIImage(systemName: "person.badge.plus"),
+                primaryAction: UIAction { [weak self] _ in
+                    guard let self else { return }
+                    self.onInviteFriends?(self.conversation.id)
+                }
+            )
+            inviteButton.accessibilityLabel = "邀请好友"
+
+            navigationItem.rightBarButtonItems = [generationButton, inviteButton]
+        } else {
+            navigationItem.rightBarButtonItems = [generationButton]
+        }
 
         messageInputView.onSend = { [weak self] text in
             self?.appendUserMessage(text)
@@ -798,7 +817,7 @@ final class ChatViewController:
 
         messageInputView.setSending(isPreparingGeneration || hasActiveGeneration)
 
-        let button = navigationItem.rightBarButtonItem
+        let button = generationButton
 
         if shouldReconnectGeneration {
             button?.title = "重连"

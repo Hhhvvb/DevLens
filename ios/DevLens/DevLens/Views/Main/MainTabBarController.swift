@@ -32,7 +32,8 @@ final class MainTabBarController: UITabBarController {
 
         let conversations = ConversationListViewController(
             userID: user.id,
-            conversationService: conversationService
+            conversationService: conversationService,
+            friendService: self.friendService
         )
 
         let profile = ProfileViewController(
