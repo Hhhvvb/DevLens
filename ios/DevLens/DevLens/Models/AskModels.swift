@@ -43,7 +43,7 @@ nonisolated struct StreamDone: Decodable {
     }
 }
 
-nonisolated struct SourceChunk: Codable {
+nonisolated struct SourceChunk: Codable, Equatable {
     let path: String
     let startLine: Int
     let endLine: Int

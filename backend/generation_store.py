@@ -532,7 +532,8 @@ class GenerationStore:
         connection.execute(
             """
             UPDATE conversations
-            SET updated_at = ?
+            SET updated_at = ?,
+                turn_revision = turn_revision + 1
             WHERE id = ?
             """,
             (timestamp, conversation_id),

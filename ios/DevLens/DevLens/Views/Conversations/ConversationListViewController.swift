@@ -13,6 +13,7 @@ final class ConversationListViewController: UITableViewController {
     private let userID: UUID
     private let friendService: any FriendService
     private var memberCounts: [UUID: Int] = [:]
+    private var needsServerListRefresh = false
 
     init(
         userID: UUID,
@@ -125,6 +126,7 @@ final class ConversationListViewController: UITableViewController {
         defer {
             isCreating = false
             navigationItem.rightBarButtonItem?.isEnabled = !isOpeningConversation && !isLoadingServerConversations
+            refreshServerListIfNeeded()
         }
 
         let pending = pendingConversation ?? Conversation()
@@ -293,11 +295,23 @@ final class ConversationListViewController: UITableViewController {
         }
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        refreshServerListIfNeeded()
+    }
+
     private func showConversation(_ conversation: Conversation) {
         let controller = ChatViewController(
             conversation: conversation,
             apiClient: conversationService
         )
+
+        if memberCounts[conversation.id] != nil || serverOnlyConversationIDs.contains(conversation.id) {
+            controller.onLoadServerConversation = { [weak self] conversation in
+                guard let self else { throw CancellationError() }
+                return try await self.loadServerConversation(conversation)
+            }
+        }
 
         controller.onInviteFriends = { [weak self] conversationID in
             guard let self, let navigation = self.navigationController else {
@@ -390,7 +404,7 @@ final class ConversationListViewController: UITableViewController {
         }
     }
 
-    private func loadServerConversations() async {
+    private func loadServerConversations(showErrors: Bool = true) async {
         guard store != nil,
               !isCreating,
               !isOpeningConversation else {
@@ -403,6 +417,7 @@ final class ConversationListViewController: UITableViewController {
         }
 
         isLoadingServerConversations = true
+        needsServerListRefresh = false
 
         tableView.isUserInteractionEnabled = false
         navigationItem.rightBarButtonItem?.isEnabled = false
@@ -414,6 +429,7 @@ final class ConversationListViewController: UITableViewController {
             navigationItem.rightBarButtonItem?.isEnabled = !isCreating && !isOpeningConversation
 
             refreshControl?.endRefreshing()
+            refreshServerListIfNeeded()
         }
 
         do {
@@ -421,11 +437,8 @@ final class ConversationListViewController: UITableViewController {
             memberCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.memberCount) })
 
             for summary in summaries {
-                let alreadyExists = conversations.contains {
-                    $0.id == summary.id
-                }
-
-                guard !alreadyExists else {
+                if let index = conversations.firstIndex(where: { $0.id == summary.id }) {
+                    conversations[index].updatedAt = max(conversations[index].updatedAt, summary.updatedAt)
                     continue
                 }
 
@@ -453,6 +466,8 @@ final class ConversationListViewController: UITableViewController {
                 tableView.backgroundView = nil
             }
         } catch {
+            guard showErrors else { return }
+
             let alert = UIAlertController(
                 title: "无法读取服务器会话",
                 message: error.localizedDescription,
@@ -472,7 +487,14 @@ final class ConversationListViewController: UITableViewController {
             return
         }
 
-        guard serverOnlyConversationIDs.contains(conversation.id) else {
+        if let active = conversation.activeGeneration, !active.isConfirmed {
+            showConversation(conversation)
+            return
+        }
+
+        let isKnownToServer = memberCounts[conversation.id] != nil || serverOnlyConversationIDs.contains(conversation.id)
+
+        guard isKnownToServer else {
             showConversation(conversation)
             return
         }
@@ -490,42 +512,11 @@ final class ConversationListViewController: UITableViewController {
                 self.isOpeningConversation = false
                 self.tableView.isUserInteractionEnabled = true
                 self.navigationItem.rightBarButtonItem?.isEnabled = !self.isCreating
+                refreshServerListIfNeeded()
             }
 
             do {
-                let recovery = try await self.conversationService.getActiveGeneration(conversationID: conversation.id)
-
-                let messages = try await self.loadServerMessages(
-                    conversationID: conversation.id
-                )
-
-                var restored = conversation
-                restored.messages = messages
-
-                restored.activeGeneration = nil
-
-                if let recovery {
-                    let snapshot = recovery.snapshot
-
-                    guard snapshot.conversationID == conversation.id,
-                          recovery.request.conversationID == conversation.id,
-                          recovery.request.requestID == snapshot.id,
-                          messages.contains(where: {
-                              $0.id == snapshot.questionMessageID && $0.role == .user
-                          }),
-                          messages.contains(where: {
-                              $0.id == snapshot.answerMessageID && $0.role == .assistant
-                          }) else {
-                        throw APIError.invalidResponse
-                    }
-
-                    restored.activeGeneration = ActiveGeneration(
-                        request: recovery.request,
-                        questionMessageID: snapshot.questionMessageID,
-                        answerMessageID: snapshot.answerMessageID,
-                        isConfirmed: true
-                    )
-                }
+                let restored = try await self.loadServerConversation(conversation)
 
                 let operation = self.saveConversation(restored)
                 try await operation.value
@@ -573,18 +564,17 @@ final class ConversationListViewController: UITableViewController {
                 return
             }
 
-            navigation.popViewController(animated: false)
-
             Task { [weak self] in
                 guard let self else { return }
 
                 await self.loadServerConversations()
 
-                guard self.navigationController?.topViewController === self,
+                guard self.navigationController?.topViewController === controller,
                       let conversation = self.conversations.first(where: { $0.id == id }) else {
                     return
                 }
 
+                navigation.popViewController(animated: false)
                 self.serverOnlyConversationIDs.insert(id)
                 self.openConversation(conversation)
             }
@@ -602,5 +592,77 @@ final class ConversationListViewController: UITableViewController {
         default:
             return []
         }
+    }
+
+    func receiveConversationUpdate(_ update: ConversationUpdateEvent) {
+        guard update.isInitial || !update.revisions.isEmpty || !update.removedConversationIDs.isEmpty else {
+            return
+        }
+
+        if let chat = navigationController?.topViewController as? ChatViewController, update.isInitial || update.revisions.keys.contains(where: {
+            UUID(uuidString: $0) == chat.conversationID
+        }) {
+            chat.requestConversationSync()
+        }
+
+        needsServerListRefresh = true
+        refreshServerListIfNeeded()
+    }
+
+    private func refreshServerListIfNeeded() {
+        Task { [weak self] in
+            guard let self,
+                  self.needsServerListRefresh,
+                  self.viewIfLoaded?.window != nil,
+                  self.navigationController?.topViewController === self,
+                  self.store != nil,
+                  !self.isCreating,
+                  !self.isOpeningConversation,
+                  !self.isLoadingServerConversations else {
+                return
+            }
+
+            await self.loadServerConversations(showErrors: false)
+        }
+    }
+
+    private func loadServerConversation(
+        _ conversation: Conversation
+    ) async throws -> Conversation {
+        let recovery = try await conversationService.getActiveGeneration(conversationID: conversation.id)
+
+        let messages = try await loadServerMessages(
+            conversationID: conversation.id
+        )
+
+        var restored = conversation
+        restored.messages = messages
+
+        restored.activeGeneration = nil
+
+        if let recovery {
+            let snapshot = recovery.snapshot
+
+            guard snapshot.conversationID == conversation.id,
+                  recovery.request.conversationID == conversation.id,
+                  recovery.request.requestID == snapshot.id,
+                  messages.contains(where: {
+                      $0.id == snapshot.questionMessageID && $0.role == .user
+                  }),
+                  messages.contains(where: {
+                      $0.id == snapshot.answerMessageID && $0.role == .assistant
+                  }) else {
+                throw APIError.invalidResponse
+            }
+
+            restored.activeGeneration = ActiveGeneration(
+                request: recovery.request,
+                questionMessageID: snapshot.questionMessageID,
+                answerMessageID: snapshot.answerMessageID,
+                isConfirmed: true
+            )
+        }
+
+        return restored
     }
 }

@@ -15,4 +15,8 @@ protocol ConversationService {
     func getActiveGeneration(
         conversationID: UUID
     ) async throws -> ConversationGenerationRecovery?
+
+    func subscribeConversationEvents(
+        onUpdate: @MainActor (ConversationUpdateEvent) -> Void
+    ) async throws
 }

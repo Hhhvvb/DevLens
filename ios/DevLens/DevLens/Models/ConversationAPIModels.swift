@@ -21,6 +21,18 @@ nonisolated struct ConversationSummary: Decodable, Identifiable {
     }
 }
 
+nonisolated struct ConversationUpdateEvent: Decodable {
+    let isInitial: Bool
+    let revisions: [String: Int]
+    let removedConversationIDs: [UUID]
+
+    enum CodingKeys: String, CodingKey {
+        case isInitial = "is_initial"
+        case revisions
+        case removedConversationIDs = "removed_conversation_ids"
+    }
+}
+
 nonisolated struct ConversationMessage: Decodable, Identifiable {
     let id: UUID
     let conversationID: UUID

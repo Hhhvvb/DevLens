@@ -964,6 +964,67 @@ async def get_conversation(
 
     return conversation
 
+@app.get("/v1/conversation-events")
+async def subscribe_conversation_events(
+    http_request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> StreamingResponse:
+    store = http_request.app.state.conversation_store
+
+    async def events():
+        previous_revisions: dict[str, int] = {}
+        is_initial = True
+        loop = asyncio.get_running_loop()
+        last_sent_at = loop.time()
+
+        while True:
+            if await http_request.is_disconnected():
+                return
+
+            current_revisions = await run_in_threadpool(
+                store.list_turn_revisions,
+                user.id
+            )
+
+            changed_revisions = {
+                conversation_id: revision
+                for conversation_id, revision in current_revisions.items()
+                if previous_revisions.get(conversation_id) != revision
+            }
+
+            removed_ids = [
+                conversation_id
+                for conversation_id in previous_revisions
+                if conversation_id not in current_revisions
+            ]
+
+            if is_initial or changed_revisions or removed_ids:
+                yield encode_sse(
+                    "conversation_updates",
+                    {
+                        "is_initial": is_initial,
+                        "revisions": changed_revisions,
+                        "removed_conversation_ids": removed_ids,
+                    },
+                )
+                last_sent_at = loop.time()
+            elif loop.time() - last_sent_at >= 15:
+                yield ":ping\n\n"
+                last_sent_at = loop.time()
+
+            previous_revisions = current_revisions
+            is_initial = False
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
 @app.get(
     "/v1/conversations/{conversation_id}/messages",
     response_model=list[ConversationMessage],

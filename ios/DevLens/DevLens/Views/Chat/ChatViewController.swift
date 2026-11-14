@@ -29,6 +29,10 @@ final class ChatViewController:
     private var generationButton: UIBarButtonItem?
     private var lastSaveAt: Date?
     private var isPageVisible = false
+    var conversationID: UUID { conversation.id }
+    var onLoadServerConversation: (@MainActor (Conversation) async throws -> Conversation)?
+    private var needsConversationSync = false
+    private var isSyncingConversation = false
 
     private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
         [weak self] cell, _, message in
@@ -171,6 +175,7 @@ final class ChatViewController:
         super.viewDidAppear(animated)
 
         isPageVisible = true
+        requestConversationSync()
 
         guard conversation.activeGeneration != nil,
               !viewModel.state.isLoading else {
@@ -267,6 +272,7 @@ final class ChatViewController:
 
     private func appendUserMessage(_ rawText: String) {
         guard !isPreparingGeneration,
+              !isSyncingConversation,
               conversation.activeGeneration == nil else {
             return
         }
@@ -749,6 +755,7 @@ final class ChatViewController:
     ) {
         defer {
             updateGenerationControls()
+            syncConversationIfNeeded()
         }
 
         switch state {
@@ -815,7 +822,7 @@ final class ChatViewController:
     private func updateGenerationControls() {
         let hasActiveGeneration = conversation.activeGeneration != nil
 
-        messageInputView.setSending(isPreparingGeneration || hasActiveGeneration)
+        messageInputView.setSending(isSyncingConversation || isPreparingGeneration || hasActiveGeneration)
 
         let button = generationButton
 
@@ -906,6 +913,9 @@ final class ChatViewController:
     }
 
     @objc private func appDidBecomeActive() {
+        if isPageVisible {
+            requestConversationSync()
+        }
         guard isPageVisible,
               conversation.activeGeneration != nil,
               !viewModel.state.isLoading else {
@@ -913,6 +923,71 @@ final class ChatViewController:
         }
 
         resumeActiveGeneration()
+    }
+
+    func requestConversationSync() {
+        guard onLoadServerConversation != nil else { return }
+
+        needsConversationSync = true
+        syncConversationIfNeeded()
+    }
+
+    private func syncConversationIfNeeded() {
+        guard needsConversationSync,
+              isPageVisible,
+              UIApplication.shared.applicationState == .active,
+              !isSyncingConversation,
+              !isPreparingGeneration,
+              conversation.activeGeneration == nil,
+              let load = onLoadServerConversation else {
+            return
+        }
+
+        needsConversationSync = false
+        isSyncingConversation = true
+        updateGenerationControls()
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            defer {
+                isSyncingConversation = false
+                updateGenerationControls()
+                syncConversationIfNeeded()
+            }
+
+            do {
+                let restored = try await load(conversation)
+
+                guard isPageVisible,
+                      UIApplication.shared.applicationState == .active else {
+                    return
+                }
+
+                let serverIDs = Set(restored.messages.map { $0.id })
+                let localFailures = messages.filter {
+                    $0.isExcludedFromContext == true && !serverIDs.contains($0.id)
+                }
+                let latestMessages = restored.messages + localFailures
+
+                conversation.activeGeneration = restored.activeGeneration
+                activeReplyID = restored.activeGeneration?.answerMessageID
+
+                if messages != latestMessages {
+                    messages = latestMessages
+                    collectionView.reloadData()
+                    collectionView.layoutIfNeeded()
+                    followLatestIfNeeded()
+                    updateLatestButtonVisibility()
+                }
+
+                resumeActiveGeneration()
+            } catch {
+                #if DEBUG
+                print("会话同步失败：\(error.localizedDescription)")
+                #endif
+            }
+        }
     }
 }
 

@@ -18,16 +18,31 @@ class ConversationStore:
         with closing(
             sqlite3.connect(self.database_path)
         ) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    turn_revision INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+
+            columns = connection.execute(
+                "PRAGMA table_info(conversations)"
+            ).fetchall()
+
+            if not any(column[1] == "turn_revision" for column in columns):
+                connection.execute(
+                    """
+                    ALTER TABLE conversations
+                    ADD COLUMN turn_revision INTEGER NOT NULL DEFAULT 0
+                    """
+                )
 
             connection.execute(
                 """
@@ -266,6 +281,20 @@ class ConversationStore:
                 return None
 
             return ConversationSummary.model_validate(dict(row))
+
+    def list_turn_revisions(self, user_id: UUID) -> dict[str, int]:
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT c.id, c.turn_revision
+                FROM conversation_members AS m
+                JOIN conversations AS c ON c.id = m.conversation_id
+                WHERE m.user_id = ?
+                """,
+                (str(user_id),),
+            ).fetchall()
+
+            return dict(rows)
 
     def list_messages(
         self,
@@ -508,6 +537,15 @@ class ConversationStore:
                 WHERE id = ?
                 """,
                 (now, str(invitation_id)),
+            )
+
+            connection.execute(
+                """
+                UPDATE conversations
+                SET turn_revision = turn_revision + 1
+                WHERE id = ?
+                """,
+                (conversation,),
             )
 
             connection.commit()

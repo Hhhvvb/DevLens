@@ -5,7 +5,7 @@ nonisolated enum ChatRole: String, Codable {
     case assistant
 }
 
-nonisolated struct ChatMessage: Identifiable, Codable {
+nonisolated struct ChatMessage: Identifiable, Codable, Equatable {
     let id: UUID
     let role: ChatRole
     var text: String

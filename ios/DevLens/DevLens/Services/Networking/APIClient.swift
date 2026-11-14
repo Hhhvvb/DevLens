@@ -445,6 +445,67 @@ final class APIClient:
 
     }
 
+    func subscribeConversationEvents(
+        onUpdate: @MainActor (ConversationUpdateEvent) -> Void
+    ) async throws {
+        guard  let url = URL(string: "\(baseURL)/v1/conversation-events") else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 60
+
+        let token = try requireAccessToken()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            defer { bytes.task.cancel() }
+
+            try Task.checkCancellation()
+
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.httpError(http.statusCode)
+            }
+            guard http.mimeType?.lowercased() == "text/event-stream" else {
+                throw APIError.invalidResponse
+            }
+
+            var parser = SSEParser()
+            let decoder = JSONDecoder()
+
+            for try await byte in bytes {
+                try Task.checkCancellation()
+
+                guard let event = parser.append(byte),
+                      event.name == "conversation_updates" else {
+                    continue
+                }
+
+                let update = try decoder.decode(
+                    ConversationUpdateEvent.self,
+                    from: Data(event.data.utf8)
+                )
+                onUpdate(update)
+            }
+
+            try Task.checkCancellation()
+            throw APIError.subscriptionInterrupted
+        } catch let error as URLError {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw APIError.networkError(error.code)
+        } catch is DecodingError {
+            throw APIError.invalidResponse
+        }
+    }
+
     private func makeJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
 
