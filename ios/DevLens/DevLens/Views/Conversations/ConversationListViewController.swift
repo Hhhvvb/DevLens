@@ -13,6 +13,7 @@ final class ConversationListViewController: UITableViewController {
     private let userID: UUID
     private let friendService: any FriendService
     private var memberCounts: [UUID: Int] = [:]
+    private var unreadCounts: [UUID: Int] = [:]
     private var needsServerListRefresh = false
 
     init(
@@ -258,10 +259,30 @@ final class ConversationListViewController: UITableViewController {
 
         var content = cell.defaultContentConfiguration()
         content.text = conversation.title
-        content.secondaryText = conversation.updatedAt.formatted(
+        let updatedTime = conversation.updatedAt.formatted(
             date: .abbreviated,
             time: .shortened
         )
+
+        let unreadCount = unreadCounts[conversation.id] ?? 0
+
+        if unreadCount > 0 {
+            let subtitle = NSMutableAttributedString(
+                string: "\(updatedTime) · ",
+                attributes: [.foregroundColor: UIColor.secondaryLabel]
+            )
+
+            subtitle.append(
+                NSAttributedString(
+                    string: "\(unreadCount) 条未读",
+                    attributes: [.foregroundColor: UIColor.systemRed]
+                )
+            )
+
+            content.secondaryAttributedText = subtitle
+        } else {
+            content.secondaryText = updatedTime
+        }
 
         cell.contentConfiguration = content
         cell.accessoryType = .disclosureIndicator
@@ -434,7 +455,12 @@ final class ConversationListViewController: UITableViewController {
 
         do {
             let summaries = try await conversationService.listConversations()
-            memberCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.memberCount) })
+            memberCounts = Dictionary(
+                uniqueKeysWithValues: summaries.map { ($0.id, $0.memberCount) }
+            )
+            unreadCounts = Dictionary(
+                uniqueKeysWithValues: summaries.map{ ($0.id, $0.unreadCount ?? 0)}
+            )
 
             for summary in summaries {
                 if let index = conversations.firstIndex(where: { $0.id == summary.id }) {

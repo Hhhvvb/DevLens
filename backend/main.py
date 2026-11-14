@@ -18,7 +18,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from generation_models import ( GenerationInput, GenerationSnapshot, GenerationState, )
 from generation_store import ( GenerationConflictError, GenerationStore, )
-from conversation_models import ( IncomingConversationInvitation, CreateConversationInvitationRequest, CreateConversationRequest, ConversationSummary, ConversationMessage, )
+from conversation_models import ( ConversationListItem, MarkConversationReadRequest, IncomingConversationInvitation, CreateConversationInvitationRequest, CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
 from user_store import UserStore
 from friend_store import FriendStore
@@ -927,7 +927,7 @@ def decline_conversation_invitation(
 
 @app.get(
     "/v1/conversations",
-    response_model=list[ConversationSummary],
+    response_model=list[ConversationListItem],
 )
 async def list_conversations(
     http_request: Request,
@@ -1052,6 +1052,32 @@ async def list_conversation_messages(
         store.list_messages,
         conversation_id,
     )
+
+@app.put("/v1/conversations/{conversation_id}/read-position", status_code=204)
+def mark_conversation_read(
+    conversation_id: UUID,
+    body: MarkConversationReadRequest,
+    request: Request,
+    user: AuthUser = Depends(get_current_user),
+) -> Response:
+    store = request.app.state.conversation_store
+
+    try:
+        updated = store.mark_read(
+            conversation_id=conversation_id,
+            user_id=user.id,
+            sequence=body.sequence,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
+    return Response(status_code=204)
 
 @app.get(
     "/v1/conversations/{conversation_id}/active-generation",

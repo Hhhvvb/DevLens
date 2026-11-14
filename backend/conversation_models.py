@@ -21,6 +21,12 @@ class ConversationSummary(BaseModel):
     updated_at: datetime
     member_count: int = Field(ge=1)
 
+class ConversationListItem(ConversationSummary):
+    unread_count: int = Field(ge=0)
+
+class MarkConversationReadRequest(BaseModel):
+    sequence: int = Field(ge=0)
+
 class ConversationMessage(BaseModel):
     id: UUID
     conversation_id: UUID

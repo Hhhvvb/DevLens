@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from conversation_models import ( IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
+from conversation_models import ( ConversationListItem, IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
 
 class ConversationStore:
     def __init__(self, database_path: Path):
@@ -64,10 +64,34 @@ class ConversationStore:
                     role TEXT NOT NULL
                         CHECK (role IN ('owner', 'admin', 'member')),
                     joined_at TEXT NOT NULL,
+                    last_read_sequence INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (conversation_id, user_id)
                 )
                 """
             )
+
+            member_columns = connection.execute(
+                "PRAGMA table_info(conversation_members)"
+            ).fetchall()
+
+            if not any(column[1] == "last_read_sequence" for column in member_columns):
+                connection.execute(
+                    """
+                    ALTER TABLE conversation_members
+                    ADD COLUMN last_read_sequence INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+
+                connection.execute(
+                    """
+                    UPDATE conversation_members AS member
+                    SET last_read_sequence = (
+                        SELECT COALESCE(MAX(message.sequence), 0)
+                        FROM conversation_messages AS message
+                        WHERE message.conversation_id = member.conversation_id
+                    )
+                    """
+                )
 
             connection.execute(
                 """
@@ -223,7 +247,7 @@ class ConversationStore:
     def list_conversations(
         self,
         user_id: UUID,
-    ) -> list[ConversationSummary]:
+    ) -> list[ConversationListItem]:
         with closing(
             sqlite3.connect(self.database_path)
         ) as connection:
@@ -236,7 +260,13 @@ class ConversationStore:
                     SELECT COUNT(*)
                     FROM conversation_members AS member
                     WHERE member.conversation_id = c.id
-                ) AS member_count
+                ) AS member_count,
+                (
+                    SELECT COUNT(*)
+                    FROM conversation_messages AS message
+                    WHERE message.conversation_id = c.id
+                    AND message.sequence > m.last_read_sequence
+                ) AS unread_count
                 FROM conversation_members AS m
                 JOIN conversations AS c ON c.id = m.conversation_id
                 WHERE m.user_id = ?
@@ -246,7 +276,7 @@ class ConversationStore:
             ).fetchall()
 
             return [
-                ConversationSummary.model_validate(dict(row))
+                ConversationListItem.model_validate(dict(row))
                 for row in rows
             ]
 
@@ -295,6 +325,50 @@ class ConversationStore:
             ).fetchall()
 
             return dict(rows)
+
+    def mark_read(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+        sequence: int,
+    ) -> bool:
+        conversation = str(conversation_id)
+        member = str(user_id)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            row = connection.execute(
+                """
+                SELECT COALESCE((
+                    SELECT MAX(message.sequence)
+                    FROM conversation_messages AS message
+                    WHERE message.conversation_id = membership.conversation_id
+                ), 0)
+                FROM conversation_members AS membership
+                WHERE membership.conversation_id = ?
+                AND membership.user_id = ?
+                """,
+                (conversation, member),
+            ).fetchone()
+
+            if row is None:
+                return False
+
+            if sequence < 0 or sequence > row[0]:
+                raise ValueError("已读位置超出会话的消息范围。")
+
+            connection.execute(
+                """
+                UPDATE conversation_members
+                SET last_read_sequence = MAX(last_read_sequence, ?)
+                WHERE conversation_id = ? AND user_id = ?
+                """,
+                (sequence, conversation, member),
+            )
+
+            connection.commit()
+            return True
 
     def list_messages(
         self,

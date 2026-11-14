@@ -11,6 +11,7 @@ nonisolated struct ConversationSummary: Decodable, Identifiable {
     let createdAt: Date
     let updatedAt: Date
     let memberCount: Int
+    let unreadCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -18,6 +19,7 @@ nonisolated struct ConversationSummary: Decodable, Identifiable {
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case memberCount = "member_count"
+        case unreadCount = "unread_count"
     }
 }
 
