@@ -738,7 +738,7 @@ final class APIClient:
         )
         let body = try JSONEncoder().encode(input)
 
-        try await postExpectingNoContent(
+        try await sendExpectingNoContent(
             path: "/v1/conversations/\(conversationID.uuidString)/invitations",
             body: body,
             failureMessage: "无法发送会话邀请。"
@@ -764,7 +764,7 @@ final class APIClient:
     }
 
     func declineConversationInvitation(id: UUID) async throws {
-        try await postExpectingNoContent(
+        try await sendExpectingNoContent(
             path: "/v1/conversation-invitations/\(id.uuidString)/decline",
             failureMessage: "无法拒绝会话邀请。"
         )
@@ -804,14 +804,15 @@ final class APIClient:
         id: UUID,
         decision: FriendRequestDecision
     ) async throws {
-        try await postExpectingNoContent(
+        try await sendExpectingNoContent(
             path: "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)",
             failureMessage: "无法处理好友申请。"
         )
     }
 
-    private func postExpectingNoContent(
+    private func sendExpectingNoContent(
         path: String,
+        method: String = "POST",
         body: Data? = nil,
         failureMessage: String
     ) async throws {
@@ -822,7 +823,7 @@ final class APIClient:
         let accessToken = try requireAccessToken()
 
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = method
         request.httpBody = body
         request.timeoutInterval = 20
         request.setValue(
@@ -863,5 +864,20 @@ final class APIClient:
 
             throw APIError.networkError(error.code)
         }
+    }
+
+    func markConversationRead(
+        conversationID: UUID,
+        sequence: Int
+    ) async throws {
+        let input = MarkConversationReadRequest(sequence: sequence)
+        let body = try JSONEncoder().encode(input)
+
+        try await sendExpectingNoContent(
+            path: "/v1/conversations/\(conversationID.uuidString)/read-position",
+            method: "PUT",
+            body: body,
+            failureMessage: "无法更新已读位置。"
+        )
     }
 }

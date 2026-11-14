@@ -19,4 +19,9 @@ protocol ConversationService {
     func subscribeConversationEvents(
         onUpdate: @MainActor (ConversationUpdateEvent) -> Void
     ) async throws
+
+    func markConversationRead(
+        conversationID: UUID,
+        sequence: Int
+    ) async throws
 }

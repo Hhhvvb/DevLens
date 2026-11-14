@@ -5,6 +5,10 @@ nonisolated struct CreateConversationRequest: Encodable {
     let title: String
 }
 
+nonisolated struct MarkConversationReadRequest: Encodable {
+    let sequence: Int
+}
+
 nonisolated struct ConversationSummary: Decodable, Identifiable {
     let id: UUID
     let title: String
@@ -70,6 +74,7 @@ extension ConversationMessage {
         )
 
         message.isExcludedFromContext = isExcludedFromContext
+        message.sequence = sequence
 
         return message
     }

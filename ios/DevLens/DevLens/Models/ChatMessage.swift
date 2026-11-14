@@ -12,6 +12,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Equatable {
     var sourceChunks: [SourceChunk]
     var statusText: String?
     var isExcludedFromContext: Bool?
+    var sequence: Int?
 
     init(
         id: UUID = UUID(),

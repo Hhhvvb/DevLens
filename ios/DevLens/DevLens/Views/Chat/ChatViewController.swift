@@ -31,6 +31,9 @@ final class ChatViewController:
     private var isPageVisible = false
     var conversationID: UUID { conversation.id }
     var onLoadServerConversation: (@MainActor (Conversation) async throws -> Conversation)?
+    var onMarkConversationRead: (@MainActor (UUID, Int) async throws -> Void)?
+    private var lastReportedReadSequence = 0
+    private var isReportingReadPosition = false
     private var needsConversationSync = false
     private var isSyncingConversation = false
 
@@ -176,6 +179,7 @@ final class ChatViewController:
 
         isPageVisible = true
         requestConversationSync()
+        reportReadPositionIfNeeded()
 
         guard conversation.activeGeneration != nil,
               !viewModel.state.isLoading else {
@@ -466,6 +470,7 @@ final class ChatViewController:
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateLatestButtonVisibility()
+        reportReadPositionIfNeeded()
 
         guard isUserDragging || scrollView.isDecelerating else {
             return
@@ -657,12 +662,14 @@ final class ChatViewController:
         }
 
         let question = messages[questionIndex]
+        let answerSequence = messages[answerIndex].sequence
 
         messages[questionIndex] = ChatMessage(
             id: snapshot.questionMessageID,
             role: .user,
             text: question.text
         )
+        messages[questionIndex].sequence = question.sequence
 
         let statusText: String?
 
@@ -696,6 +703,7 @@ final class ChatViewController:
             sourceChunks: snapshot.sourceChunks,
             statusText: statusText
         )
+        messages[answerIndex].sequence = answerSequence
 
         active.questionMessageID = snapshot.questionMessageID
         active.answerMessageID = snapshot.answerMessageID
@@ -981,10 +989,42 @@ final class ChatViewController:
                     updateLatestButtonVisibility()
                 }
 
+                reportReadPositionIfNeeded()
+
                 resumeActiveGeneration()
             } catch {
                 #if DEBUG
                 print("会话同步失败：\(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    private func reportReadPositionIfNeeded() {
+        guard isPageVisible,
+              UIApplication.shared.applicationState == .active,
+              !isReportingReadPosition,
+              isNearBottom,
+              let sequence = messages.compactMap({ $0.sequence }).max(),
+              sequence > lastReportedReadSequence,
+              let onMarkConversationRead else {
+            return
+        }
+
+        isReportingReadPosition = true
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await onMarkConversationRead(conversationID, sequence)
+                lastReportedReadSequence = sequence
+                isReportingReadPosition = false
+                reportReadPositionIfNeeded()
+            } catch {
+                isReportingReadPosition = false
+                #if DEBUG
+                print("上报已读位置失败：\(error.localizedDescription)")
                 #endif
             }
         }

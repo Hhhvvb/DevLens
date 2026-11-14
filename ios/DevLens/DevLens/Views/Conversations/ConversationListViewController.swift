@@ -332,6 +332,17 @@ final class ConversationListViewController: UITableViewController {
                 guard let self else { throw CancellationError() }
                 return try await self.loadServerConversation(conversation)
             }
+            controller.onMarkConversationRead = { [weak self] conversationID, sequence in
+                guard let self else { throw CancellationError() }
+
+                try await self.conversationService.markConversationRead(
+                    conversationID: conversationID,
+                    sequence: sequence
+                )
+
+                self.needsServerListRefresh = true
+                self.refreshServerListIfNeeded()
+            }
         }
 
         controller.onInviteFriends = { [weak self] conversationID in
