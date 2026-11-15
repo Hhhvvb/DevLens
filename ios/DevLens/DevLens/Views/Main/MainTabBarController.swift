@@ -2,14 +2,15 @@ import UIKit
 
 final class MainTabBarController: UITabBarController {
     private let user: AuthUser
-    private let conversationService: any ConversationService & GenerationService
+    private let conversationService: any ConversationService & GenerationService & ConversationInvitationService
     private let profileService: any ProfileService
     private let friendService: any FriendService
     private let signOut: @MainActor () async throws -> Void
+    private lazy var conversationEvents = ConversationEventsViewModel(service: conversationService)
 
     init(
         user: AuthUser,
-        conversationService: any ConversationService & GenerationService,
+        conversationService: any ConversationService & GenerationService & ConversationInvitationService,
         profileService: any ProfileService,
         friendService: any FriendService,
         signOut: @escaping @MainActor () async throws -> Void
@@ -32,8 +33,13 @@ final class MainTabBarController: UITabBarController {
 
         let conversations = ConversationListViewController(
             userID: user.id,
-            conversationService: conversationService
+            conversationService: conversationService,
+            friendService: self.friendService
         )
+
+        conversationEvents.onUpdate = { [weak conversations] update in
+            conversations?.receiveConversationUpdate(update)
+        }
 
         let profile = ProfileViewController(
             user: user,
@@ -80,5 +86,13 @@ final class MainTabBarController: UITabBarController {
             conversationNavigation,
             profileNavigation
         ]
+    }
+
+    func startConversationEvents() {
+        conversationEvents.start()
+    }
+
+    func stopConversationEvents() {
+        conversationEvents.stop()
     }
 }

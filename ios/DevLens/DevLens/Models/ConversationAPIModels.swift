@@ -5,17 +5,42 @@ nonisolated struct CreateConversationRequest: Encodable {
     let title: String
 }
 
+nonisolated struct MarkConversationReadRequest: Encodable {
+    let sequence: Int
+}
+
 nonisolated struct ConversationSummary: Decodable, Identifiable {
     let id: UUID
     let title: String
     let createdAt: Date
     let updatedAt: Date
+    let memberCount: Int
+    let unreadCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case memberCount = "member_count"
+        case unreadCount = "unread_count"
+    }
+}
+
+nonisolated struct ConversationMemberSummary: Decodable {
+    let id: UUID
+    let nickname: String
+}
+
+nonisolated struct ConversationUpdateEvent: Decodable {
+    let isInitial: Bool
+    let revisions: [String: Int]
+    let removedConversationIDs: [UUID]
+
+    enum CodingKeys: String, CodingKey {
+        case isInitial = "is_initial"
+        case revisions
+        case removedConversationIDs = "removed_conversation_ids"
     }
 }
 
@@ -29,6 +54,7 @@ nonisolated struct ConversationMessage: Decodable, Identifiable {
     let statusText: String?
     let isExcludedFromContext: Bool
     let createdAt: Date
+    let authorID: UUID?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -40,6 +66,7 @@ nonisolated struct ConversationMessage: Decodable, Identifiable {
         case statusText = "status_text"
         case isExcludedFromContext = "is_excluded_from_context"
         case createdAt = "created_at"
+        case authorID = "author_id"
     }
 }
 
@@ -50,10 +77,12 @@ extension ConversationMessage {
             role: role,
             text: text,
             sourceChunks: sourceChunks,
-            statusText: statusText
+            statusText: statusText,
+            authorID: authorID
         )
 
         message.isExcludedFromContext = isExcludedFromContext
+        message.sequence = sequence
 
         return message
     }

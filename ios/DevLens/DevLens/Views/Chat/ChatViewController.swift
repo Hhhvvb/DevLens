@@ -15,6 +15,7 @@ final class ChatViewController:
         }
     }
     private let viewModel: GenerationViewModel
+    private let membersViewModel: ConversationMembersViewModel
     private var isPreparingGeneration = false
     private var activeReplyID: UUID?
     private let collectionView: UICollectionView
@@ -25,16 +26,30 @@ final class ChatViewController:
     private var shouldResumeAfterScrolling = false
     private let latestButton = UIButton(type: .system)
     var onSaveConversation: ((Conversation) -> Task<Void, Error>)?
+    var onInviteFriends: ((UUID) -> Void)?
+    private var generationButton: UIBarButtonItem?
     private var lastSaveAt: Date?
     private var isPageVisible = false
+    var conversationID: UUID { conversation.id }
+    var onLoadServerConversation: (@MainActor (Conversation) async throws -> Conversation)?
+    var onMarkConversationRead: (@MainActor (UUID, Int) async throws -> Void)?
+    private var lastReportedReadSequence = 0
+    private var isReportingReadPosition = false
+    private var needsConversationSync = false
+    private var isSyncingConversation = false
+    private let currentUserID: UUID?
 
     private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
         [weak self] cell, _, message in
 
         let messageID = message.id
+        let currentUserID = self?.currentUserID
+        let isOwnMessage = message.role == .user && currentUserID != nil && message.authorID == currentUserID
 
         cell.configure(
             with: message,
+            isOwnMessage: isOwnMessage,
+            authorNickname: self?.membersViewModel.nickname(for: message.authorID),
             onShowSources: { [weak self] in
                 self?.showSources(for: messageID)
             }
@@ -43,11 +58,17 @@ final class ChatViewController:
 
     init(
         conversation: Conversation = Conversation(),
-        apiClient: any GenerationService
+        apiClient: any GenerationService & ConversationService,
+        currentUserID: UUID? = nil
     ) {
         self.conversation = conversation
+        self.currentUserID = currentUserID
         self.activeReplyID = conversation.activeGeneration?.answerMessageID
         self.viewModel = GenerationViewModel(apiClient: apiClient)
+        self.membersViewModel = ConversationMembersViewModel(
+            service: apiClient,
+            conversationID: conversation.id
+        )
 
         var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
         configuration.showsSeparators = false
@@ -91,7 +112,7 @@ final class ChatViewController:
         dismissTap.cancelsTouchesInView = false
         collectionView.addGestureRecognizer(dismissTap)
 
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
+        let generationButton = UIBarButtonItem(
             title: "停止",
             primaryAction: UIAction { [weak self] _ in
                 guard let self else {
@@ -105,6 +126,23 @@ final class ChatViewController:
                 }
             }
         )
+
+        self.generationButton = generationButton
+
+        if onInviteFriends != nil {
+            let inviteButton = UIBarButtonItem(
+                image: UIImage(systemName: "person.badge.plus"),
+                primaryAction: UIAction { [weak self] _ in
+                    guard let self else { return }
+                    self.onInviteFriends?(self.conversation.id)
+                }
+            )
+            inviteButton.accessibilityLabel = "邀请好友"
+
+            navigationItem.rightBarButtonItems = [generationButton, inviteButton]
+        } else {
+            navigationItem.rightBarButtonItems = [generationButton]
+        }
 
         messageInputView.onSend = { [weak self] text in
             self?.appendUserMessage(text)
@@ -152,6 +190,9 @@ final class ChatViewController:
         super.viewDidAppear(animated)
 
         isPageVisible = true
+        loadMemberNamesIfNeeded()
+        requestConversationSync()
+        reportReadPositionIfNeeded()
 
         guard conversation.activeGeneration != nil,
               !viewModel.state.isLoading else {
@@ -248,6 +289,7 @@ final class ChatViewController:
 
     private func appendUserMessage(_ rawText: String) {
         guard !isPreparingGeneration,
+              !isSyncingConversation,
               conversation.activeGeneration == nil else {
             return
         }
@@ -286,7 +328,8 @@ final class ChatViewController:
 
         let question = ChatMessage(
             role: .user,
-            text: text
+            text: text,
+            authorID: currentUserID
         )
 
         let reply = ChatMessage(
@@ -441,6 +484,7 @@ final class ChatViewController:
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         updateLatestButtonVisibility()
+        reportReadPositionIfNeeded()
 
         guard isUserDragging || scrollView.isDecelerating else {
             return
@@ -632,12 +676,15 @@ final class ChatViewController:
         }
 
         let question = messages[questionIndex]
+        let answerSequence = messages[answerIndex].sequence
 
         messages[questionIndex] = ChatMessage(
             id: snapshot.questionMessageID,
             role: .user,
-            text: question.text
+            text: question.text,
+            authorID: question.authorID
         )
+        messages[questionIndex].sequence = question.sequence
 
         let statusText: String?
 
@@ -671,6 +718,7 @@ final class ChatViewController:
             sourceChunks: snapshot.sourceChunks,
             statusText: statusText
         )
+        messages[answerIndex].sequence = answerSequence
 
         active.questionMessageID = snapshot.questionMessageID
         active.answerMessageID = snapshot.answerMessageID
@@ -730,6 +778,7 @@ final class ChatViewController:
     ) {
         defer {
             updateGenerationControls()
+            syncConversationIfNeeded()
         }
 
         switch state {
@@ -796,9 +845,9 @@ final class ChatViewController:
     private func updateGenerationControls() {
         let hasActiveGeneration = conversation.activeGeneration != nil
 
-        messageInputView.setSending(isPreparingGeneration || hasActiveGeneration)
+        messageInputView.setSending(isSyncingConversation || isPreparingGeneration || hasActiveGeneration)
 
-        let button = navigationItem.rightBarButtonItem
+        let button = generationButton
 
         if shouldReconnectGeneration {
             button?.title = "重连"
@@ -887,6 +936,9 @@ final class ChatViewController:
     }
 
     @objc private func appDidBecomeActive() {
+        if isPageVisible {
+            requestConversationSync()
+        }
         guard isPageVisible,
               conversation.activeGeneration != nil,
               !viewModel.state.isLoading else {
@@ -894,6 +946,143 @@ final class ChatViewController:
         }
 
         resumeActiveGeneration()
+    }
+
+    func requestConversationSync() {
+        guard onLoadServerConversation != nil else { return }
+
+        needsConversationSync = true
+        syncConversationIfNeeded()
+    }
+
+    private func syncConversationIfNeeded() {
+        guard needsConversationSync,
+              isPageVisible,
+              UIApplication.shared.applicationState == .active,
+              !isSyncingConversation,
+              !isPreparingGeneration,
+              conversation.activeGeneration == nil,
+              let load = onLoadServerConversation else {
+            return
+        }
+
+        needsConversationSync = false
+        isSyncingConversation = true
+        updateGenerationControls()
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            defer {
+                isSyncingConversation = false
+                updateGenerationControls()
+                syncConversationIfNeeded()
+            }
+
+            do {
+                let restored = try await load(conversation)
+
+                guard isPageVisible,
+                      UIApplication.shared.applicationState == .active else {
+                    return
+                }
+
+                let serverIDs = Set(restored.messages.map { $0.id })
+                let localFailures = messages.filter {
+                    $0.isExcludedFromContext == true && !serverIDs.contains($0.id)
+                }
+                let latestMessages = restored.messages + localFailures
+
+                conversation.activeGeneration = restored.activeGeneration
+                activeReplyID = restored.activeGeneration?.answerMessageID
+
+                if messages != latestMessages {
+                    messages = latestMessages
+                    collectionView.reloadData()
+                    collectionView.layoutIfNeeded()
+                    followLatestIfNeeded()
+                    updateLatestButtonVisibility()
+                }
+
+                loadMemberNamesIfNeeded()
+                reportReadPositionIfNeeded()
+                resumeActiveGeneration()
+            } catch {
+                #if DEBUG
+                print("会话同步失败：\(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    private func loadMemberNamesIfNeeded() {
+        let authorIDs = Set(messages.compactMap { message -> UUID? in
+            guard message.role == .user,
+                  let authorID = message.authorID,
+                  authorID != currentUserID else {
+                return nil
+            }
+
+            return authorID
+        })
+
+        guard !authorIDs.isEmpty else { return }
+
+        Task { [weak self, membersViewModel] in
+            do {
+                let loaded = try await membersViewModel.loadIfNeeded(for: authorIDs)
+                guard loaded, let self else { return }
+
+                let paths = self.collectionView.indexPathsForVisibleItems.filter { path in
+                    guard self.messages.indices.contains(path.item),
+                          let authorID = self.messages[path.item].authorID else {
+                        return false
+                    }
+
+                    return authorID != self.currentUserID
+                }
+
+                UIView.performWithoutAnimation {
+                    self.collectionView.reconfigureItems(at: paths)
+                }
+
+                self.loadMemberNamesIfNeeded()
+            } catch {
+                #if DEBUG
+                print("读取成员昵称失败：\(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    private func reportReadPositionIfNeeded() {
+        guard isPageVisible,
+              UIApplication.shared.applicationState == .active,
+              !isReportingReadPosition,
+              isNearBottom,
+              let sequence = messages.compactMap({ $0.sequence }).max(),
+              sequence > lastReportedReadSequence,
+              let onMarkConversationRead else {
+            return
+        }
+
+        isReportingReadPosition = true
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await onMarkConversationRead(conversationID, sequence)
+                lastReportedReadSequence = sequence
+                isReportingReadPosition = false
+                reportReadPositionIfNeeded()
+            } catch {
+                isReportingReadPosition = false
+                #if DEBUG
+                print("上报已读位置失败：\(error.localizedDescription)")
+                #endif
+            }
+        }
     }
 }
 

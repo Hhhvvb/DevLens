@@ -5,19 +5,25 @@ final class ConversationListViewController: UITableViewController {
     private var store: ConversationStore?
     private var isCreating = false
     private var saveTask: Task<Void, Never>?
-    private let conversationService: any ConversationService & GenerationService
+    private let conversationService: any ConversationService & GenerationService & ConversationInvitationService
     private var pendingConversation: Conversation?
     private var serverOnlyConversationIDs: Set<UUID> = []
     private var isOpeningConversation = false
     private var isLoadingServerConversations = false
     private let userID: UUID
+    private let friendService: any FriendService
+    private var memberCounts: [UUID: Int] = [:]
+    private var unreadCounts: [UUID: Int] = [:]
+    private var needsServerListRefresh = false
 
     init(
         userID: UUID,
-        conversationService: any ConversationService & GenerationService
+        conversationService: any ConversationService & GenerationService & ConversationInvitationService,
+        friendService: any FriendService
     ) {
         self.userID = userID
         self.conversationService = conversationService
+        self.friendService = friendService
         super.init(style: .insetGrouped)
     }
 
@@ -121,6 +127,7 @@ final class ConversationListViewController: UITableViewController {
         defer {
             isCreating = false
             navigationItem.rightBarButtonItem?.isEnabled = !isOpeningConversation && !isLoadingServerConversations
+            refreshServerListIfNeeded()
         }
 
         let pending = pendingConversation ?? Conversation()
@@ -165,6 +172,7 @@ final class ConversationListViewController: UITableViewController {
             }
 
             try await store.upsert(conversation)
+            memberCounts[summary.id] = summary.memberCount
 
             conversations.removeAll {
                 $0.id == conversation.id
@@ -209,17 +217,37 @@ final class ConversationListViewController: UITableViewController {
         tableView.backgroundView = label
     }
 
+    override func numberOfSections(in tableView: UITableView) -> Int {
+        3
+    }
+
     override func tableView(
         _ tableView: UITableView,
         numberOfRowsInSection section: Int
     ) -> Int {
-        conversations.count
+        if section == 0 {
+            return 1
+        }
+        return conversationsForSection(section).count
     }
 
     override func tableView(
         _ tableView: UITableView,
         cellForRowAt indexPath: IndexPath
     ) -> UITableViewCell {
+        if indexPath.section == 0 {
+            let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+
+            var content = cell.defaultContentConfiguration()
+            content.text = "会话邀请"
+            content.image = UIImage(systemName: "envelope")
+            content.imageProperties.tintColor = .systemIndigo
+
+            cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            return cell
+        }
+
         let cell = tableView.dequeueReusableCell(
             withIdentifier: "ConversationCell"
         ) ?? UITableViewCell(
@@ -227,14 +255,34 @@ final class ConversationListViewController: UITableViewController {
             reuseIdentifier: "ConversationCell"
         )
 
-        let conversation = conversations[indexPath.row]
+        let conversation = conversationsForSection(indexPath.section)[indexPath.row]
 
         var content = cell.defaultContentConfiguration()
         content.text = conversation.title
-        content.secondaryText = conversation.updatedAt.formatted(
+        let updatedTime = conversation.updatedAt.formatted(
             date: .abbreviated,
             time: .shortened
         )
+
+        let unreadCount = unreadCounts[conversation.id] ?? 0
+
+        if unreadCount > 0 {
+            let subtitle = NSMutableAttributedString(
+                string: "\(updatedTime) · ",
+                attributes: [.foregroundColor: UIColor.secondaryLabel]
+            )
+
+            subtitle.append(
+                NSAttributedString(
+                    string: "\(unreadCount) 条未读",
+                    attributes: [.foregroundColor: UIColor.systemRed]
+                )
+            )
+
+            content.secondaryAttributedText = subtitle
+        } else {
+            content.secondaryText = updatedTime
+        }
 
         cell.contentConfiguration = content
         cell.accessoryType = .disclosureIndicator
@@ -248,15 +296,71 @@ final class ConversationListViewController: UITableViewController {
     ) {
         tableView.deselectRow(at: indexPath, animated: true)
 
-        let conversation = conversations[indexPath.row]
+        if indexPath.section == 0 {
+            showConversationInvitations()
+            return
+        }
+
+        let conversation = conversationsForSection(indexPath.section)[indexPath.row]
         openConversation(conversation)
+    }
+
+    override func tableView(
+        _ tableView: UITableView,
+        titleForHeaderInSection section: Int
+    ) -> String? {
+        switch section {
+        case 1: return "个人"
+        case 2: return "共享"
+        default: return nil
+        }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        refreshServerListIfNeeded()
     }
 
     private func showConversation(_ conversation: Conversation) {
         let controller = ChatViewController(
             conversation: conversation,
-            apiClient: conversationService
+            apiClient: conversationService,
+            currentUserID: userID
         )
+
+        if memberCounts[conversation.id] != nil || serverOnlyConversationIDs.contains(conversation.id) {
+            controller.onLoadServerConversation = { [weak self] conversation in
+                guard let self else { throw CancellationError() }
+                return try await self.loadServerConversation(conversation)
+            }
+            controller.onMarkConversationRead = { [weak self] conversationID, sequence in
+                guard let self else { throw CancellationError() }
+
+                try await self.conversationService.markConversationRead(
+                    conversationID: conversationID,
+                    sequence: sequence
+                )
+
+                self.needsServerListRefresh = true
+                self.refreshServerListIfNeeded()
+            }
+        }
+
+        controller.onInviteFriends = { [weak self] conversationID in
+            guard let self, let navigation = self.navigationController else {
+                return
+            }
+
+            let viewModel = InviteFriendViewModel(
+                conversationID: conversationID,
+                friendService: self.friendService,
+                invitationService: self.conversationService
+            )
+            let invitePage = InviteFriendViewController(viewModel: viewModel)
+            invitePage.hidesBottomBarWhenPushed = true
+
+            navigation.pushViewController(invitePage, animated: true)
+        }
 
         controller.onSaveConversation = { [weak self] conversation in
             guard let self else {
@@ -333,7 +437,7 @@ final class ConversationListViewController: UITableViewController {
         }
     }
 
-    private func loadServerConversations() async {
+    private func loadServerConversations(showErrors: Bool = true) async {
         guard store != nil,
               !isCreating,
               !isOpeningConversation else {
@@ -346,6 +450,7 @@ final class ConversationListViewController: UITableViewController {
         }
 
         isLoadingServerConversations = true
+        needsServerListRefresh = false
 
         tableView.isUserInteractionEnabled = false
         navigationItem.rightBarButtonItem?.isEnabled = false
@@ -357,17 +462,21 @@ final class ConversationListViewController: UITableViewController {
             navigationItem.rightBarButtonItem?.isEnabled = !isCreating && !isOpeningConversation
 
             refreshControl?.endRefreshing()
+            refreshServerListIfNeeded()
         }
 
         do {
             let summaries = try await conversationService.listConversations()
+            memberCounts = Dictionary(
+                uniqueKeysWithValues: summaries.map { ($0.id, $0.memberCount) }
+            )
+            unreadCounts = Dictionary(
+                uniqueKeysWithValues: summaries.map{ ($0.id, $0.unreadCount ?? 0)}
+            )
 
             for summary in summaries {
-                let alreadyExists = conversations.contains {
-                    $0.id == summary.id
-                }
-
-                guard !alreadyExists else {
+                if let index = conversations.firstIndex(where: { $0.id == summary.id }) {
+                    conversations[index].updatedAt = max(conversations[index].updatedAt, summary.updatedAt)
                     continue
                 }
 
@@ -395,6 +504,8 @@ final class ConversationListViewController: UITableViewController {
                 tableView.backgroundView = nil
             }
         } catch {
+            guard showErrors else { return }
+
             let alert = UIAlertController(
                 title: "无法读取服务器会话",
                 message: error.localizedDescription,
@@ -414,7 +525,14 @@ final class ConversationListViewController: UITableViewController {
             return
         }
 
-        guard serverOnlyConversationIDs.contains(conversation.id) else {
+        if let active = conversation.activeGeneration, !active.isConfirmed {
+            showConversation(conversation)
+            return
+        }
+
+        let isKnownToServer = memberCounts[conversation.id] != nil || serverOnlyConversationIDs.contains(conversation.id)
+
+        guard isKnownToServer else {
             showConversation(conversation)
             return
         }
@@ -432,40 +550,11 @@ final class ConversationListViewController: UITableViewController {
                 self.isOpeningConversation = false
                 self.tableView.isUserInteractionEnabled = true
                 self.navigationItem.rightBarButtonItem?.isEnabled = !self.isCreating
+                refreshServerListIfNeeded()
             }
 
             do {
-                let recovery = try await self.conversationService.getActiveGeneration(conversationID: conversation.id)
-
-                let messages = try await self.loadServerMessages(
-                    conversationID: conversation.id
-                )
-
-                var restored = conversation
-                restored.messages = messages
-
-                if let recovery {
-                    let snapshot = recovery.snapshot
-
-                    guard snapshot.conversationID == conversation.id,
-                          recovery.request.conversationID == conversation.id,
-                          recovery.request.requestID == snapshot.id,
-                          messages.contains(where: {
-                              $0.id == snapshot.questionMessageID && $0.role == .user
-                          }),
-                          messages.contains(where: {
-                              $0.id == snapshot.answerMessageID && $0.role == .assistant
-                          }) else {
-                        throw APIError.invalidResponse
-                    }
-
-                    restored.activeGeneration = ActiveGeneration(
-                        request: recovery.request,
-                        questionMessageID: snapshot.questionMessageID,
-                        answerMessageID: snapshot.answerMessageID,
-                        isConfirmed: true
-                    )
-                }
+                let restored = try await self.loadServerConversation(conversation)
 
                 let operation = self.saveConversation(restored)
                 try await operation.value
@@ -497,5 +586,121 @@ final class ConversationListViewController: UITableViewController {
         Task { [weak self] in
             await self?.loadServerConversations()
         }
+    }
+
+    private func showConversationInvitations() {
+        let viewModel = ConversationInvitationViewModel(service: conversationService)
+        let controller = ConversationInvitationListViewController(viewModel: viewModel)
+
+        controller.hidesBottomBarWhenPushed = true
+
+        controller.onAcceptConversation = { [weak self, weak controller] id in
+            guard let self,
+                  let controller,
+                  let navigation = self.navigationController,
+                  navigation.topViewController === controller else {
+                return
+            }
+
+            Task { [weak self] in
+                guard let self else { return }
+
+                await self.loadServerConversations()
+
+                guard self.navigationController?.topViewController === controller,
+                      let conversation = self.conversations.first(where: { $0.id == id }) else {
+                    return
+                }
+
+                navigation.popViewController(animated: false)
+                self.serverOnlyConversationIDs.insert(id)
+                self.openConversation(conversation)
+            }
+        }
+
+        navigationController?.pushViewController(controller, animated: true)
+    }
+
+    private func conversationsForSection(_ section: Int) -> [Conversation] {
+        switch section {
+        case 1:
+            return conversations.filter { (memberCounts[$0.id] ?? 1) == 1 }
+        case 2:
+            return conversations.filter { (memberCounts[$0.id] ?? 1) > 1}
+        default:
+            return []
+        }
+    }
+
+    func receiveConversationUpdate(_ update: ConversationUpdateEvent) {
+        guard update.isInitial || !update.revisions.isEmpty || !update.removedConversationIDs.isEmpty else {
+            return
+        }
+
+        if let chat = navigationController?.topViewController as? ChatViewController, update.isInitial || update.revisions.keys.contains(where: {
+            UUID(uuidString: $0) == chat.conversationID
+        }) {
+            chat.requestConversationSync()
+        }
+
+        needsServerListRefresh = true
+        refreshServerListIfNeeded()
+    }
+
+    private func refreshServerListIfNeeded() {
+        Task { [weak self] in
+            guard let self,
+                  self.needsServerListRefresh,
+                  self.viewIfLoaded?.window != nil,
+                  self.navigationController?.topViewController === self,
+                  self.store != nil,
+                  !self.isCreating,
+                  !self.isOpeningConversation,
+                  !self.isLoadingServerConversations else {
+                return
+            }
+
+            await self.loadServerConversations(showErrors: false)
+        }
+    }
+
+    private func loadServerConversation(
+        _ conversation: Conversation
+    ) async throws -> Conversation {
+        let recovery = try await conversationService.getActiveGeneration(conversationID: conversation.id)
+
+        let messages = try await loadServerMessages(
+            conversationID: conversation.id
+        )
+
+        var restored = conversation
+        restored.messages = messages
+
+        restored.activeGeneration = nil
+
+        if let recovery {
+            let snapshot = recovery.snapshot
+
+            guard snapshot.conversationID == conversation.id,
+                  recovery.request.conversationID == conversation.id,
+                  recovery.request.requestID == snapshot.id,
+                  messages.contains(where: {
+                      $0.id == snapshot.questionMessageID && $0.role == .user
+                  }),
+                  messages.contains(where: {
+                      $0.id == snapshot.answerMessageID && $0.role == .assistant
+                  }) else {
+                throw APIError.invalidResponse
+            }
+
+            restored.activeGeneration = ActiveGeneration(
+                request: recovery.request,
+                questionMessageID: snapshot.questionMessageID,
+                answerMessageID: snapshot.answerMessageID,
+                isConfirmed: true
+            )
+        }
+
+        return restored
     }
 }

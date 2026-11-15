@@ -77,7 +77,8 @@ final class APIClient:
     ConversationService,
     AuthService,
     ProfileService,
-    FriendService {
+    FriendService,
+    ConversationInvitationService {
     #if targetEnvironment(simulator)
     private let baseURL = "http://127.0.0.1:8000"
     #else
@@ -444,6 +445,67 @@ final class APIClient:
 
     }
 
+    func subscribeConversationEvents(
+        onUpdate: @MainActor (ConversationUpdateEvent) -> Void
+    ) async throws {
+        guard  let url = URL(string: "\(baseURL)/v1/conversation-events") else {
+            throw APIError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 60
+
+        let token = try requireAccessToken()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            defer { bytes.task.cancel() }
+
+            try Task.checkCancellation()
+
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.invalidResponse
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.httpError(http.statusCode)
+            }
+            guard http.mimeType?.lowercased() == "text/event-stream" else {
+                throw APIError.invalidResponse
+            }
+
+            var parser = SSEParser()
+            let decoder = JSONDecoder()
+
+            for try await byte in bytes {
+                try Task.checkCancellation()
+
+                guard let event = parser.append(byte),
+                      event.name == "conversation_updates" else {
+                    continue
+                }
+
+                let update = try decoder.decode(
+                    ConversationUpdateEvent.self,
+                    from: Data(event.data.utf8)
+                )
+                onUpdate(update)
+            }
+
+            try Task.checkCancellation()
+            throw APIError.subscriptionInterrupted
+        } catch let error as URLError {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw APIError.networkError(error.code)
+        } catch is DecodingError {
+            throw APIError.invalidResponse
+        }
+    }
+
     private func makeJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
 
@@ -525,6 +587,23 @@ final class APIClient:
 
         return try await sendJSONRequest(
             path: "/v1/conversations/\(conversationID.uuidString)/messages",
+            method: "GET",
+            accessToken: accessToken
+        )
+    }
+
+    func listMembers(
+        conversationID: UUID
+    ) async throws -> [ConversationMemberSummary] {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。",
+            )
+        }
+
+        return try await sendJSONRequest(
+            path: "/v1/conversations/\(conversationID.uuidString)/members",
             method: "GET",
             accessToken: accessToken
         )
@@ -667,6 +746,47 @@ final class APIClient:
         }
     }
 
+    func sendConversationInvitation(
+        conversationID: UUID,
+        recipientID: UUID
+    ) async throws {
+        let input = CreateConversationInvitationRequest(
+            recipientID: recipientID
+        )
+        let body = try JSONEncoder().encode(input)
+
+        try await sendExpectingNoContent(
+            path: "/v1/conversations/\(conversationID.uuidString)/invitations",
+            body: body,
+            failureMessage: "无法发送会话邀请。"
+        )
+    }
+
+    func listIncomingConversationInvitations() async throws -> [IncomingConversationInvitation] {
+        return try await sendJSONRequest(
+            path: "/v1/conversation-invitations/incoming",
+            method: "GET",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func acceptConversationInvitation(
+        id: UUID
+    ) async throws -> AcceptConversationInvitationResponse {
+        return try await sendJSONRequest(
+            path: "/v1/conversation-invitations/\(id.uuidString)/accept",
+            method: "POST",
+            accessToken: requireAccessToken()
+        )
+    }
+
+    func declineConversationInvitation(id: UUID) async throws {
+        try await sendExpectingNoContent(
+            path: "/v1/conversation-invitations/\(id.uuidString)/decline",
+            failureMessage: "无法拒绝会话邀请。"
+        )
+    }
+
     func listFriends() async throws -> [FriendSummary] {
         return try await sendJSONRequest(
             path: "/v1/friends",
@@ -701,8 +821,18 @@ final class APIClient:
         id: UUID,
         decision: FriendRequestDecision
     ) async throws {
-        let path = "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)"
+        try await sendExpectingNoContent(
+            path: "/v1/friend-requests/\(id.uuidString)/\(decision.rawValue)",
+            failureMessage: "无法处理好友申请。"
+        )
+    }
 
+    private func sendExpectingNoContent(
+        path: String,
+        method: String = "POST",
+        body: Data? = nil,
+        failureMessage: String
+    ) async throws {
         guard let url = URL(string: "\(baseURL)\(path)") else {
             throw APIError.invalidURL
         }
@@ -710,12 +840,20 @@ final class APIClient:
         let accessToken = try requireAccessToken()
 
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = method
+        request.httpBody = body
         request.timeoutInterval = 20
         request.setValue(
             "Bearer \(accessToken)",
             forHTTPHeaderField: "Authorization"
         )
+
+        if body != nil {
+            request.setValue(
+                "application/json",
+                forHTTPHeaderField: "Content-Type"
+            )
+        }
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -733,7 +871,7 @@ final class APIClient:
 
                 throw APIError.httpFailure(
                     statusCode: http.statusCode,
-                    message: failure?.detail ?? "无法处理好友申请。"
+                    message: failure?.detail ?? failureMessage
                 )
             }
         } catch let error as URLError {
@@ -743,5 +881,20 @@ final class APIClient:
 
             throw APIError.networkError(error.code)
         }
+    }
+
+    func markConversationRead(
+        conversationID: UUID,
+        sequence: Int
+    ) async throws {
+        let input = MarkConversationReadRequest(sequence: sequence)
+        let body = try JSONEncoder().encode(input)
+
+        try await sendExpectingNoContent(
+            path: "/v1/conversations/\(conversationID.uuidString)/read-position",
+            method: "PUT",
+            body: body,
+            failureMessage: "无法更新已读位置。"
+        )
     }
 }

@@ -1,6 +1,8 @@
 import asyncio
 import os
 import fcntl
+import sqlite3
+
 from contextlib import aclosing
 from pathlib import Path
 
@@ -178,7 +180,15 @@ async def main() -> None:
     print("后台执行器已就绪。", flush=True)
 
     while True:
-        snapshot = await asyncio.to_thread(store.claim_next)
+        try:
+            snapshot = await asyncio.to_thread(store.claim_next)
+        except sqlite3.OperationalError as error:
+            if error.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+                raise
+
+            print("任务数据库正忙，稍后重试。", flush=True)
+            await asyncio.sleep(1)
+            continue
 
         if snapshot is None:
             await asyncio.sleep(0.5)

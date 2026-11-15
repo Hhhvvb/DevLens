@@ -3,6 +3,10 @@ import SwiftUI
 
 final class ChatMessageCell: UICollectionViewCell {
     private let messageView = ChatMessageContentView(frame: .zero)
+    private lazy var messageLeadingConstraint = messageView.leadingAnchor.constraint(
+        equalTo: contentView.leadingAnchor,
+        constant: 16
+    )
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -15,10 +19,7 @@ final class ChatMessageCell: UICollectionViewCell {
                 equalTo: contentView.topAnchor,
                 constant: 12
             ),
-            messageView.leadingAnchor.constraint(
-                equalTo: contentView.leadingAnchor,
-                constant: 16
-            ),
+            messageLeadingConstraint,
             messageView.trailingAnchor.constraint(
                 equalTo: contentView.trailingAnchor,
                 constant: -16
@@ -32,10 +33,13 @@ final class ChatMessageCell: UICollectionViewCell {
 
     func configure(
         with message: ChatMessage,
+        isOwnMessage: Bool = false,
+        authorNickname: String? = nil,
         onShowSources: (() -> Void)? = nil
     ) {
+        messageLeadingConstraint.constant = isOwnMessage ? 64 : 16
         messageView.onShowSources = onShowSources
-        messageView.configure(with: message)
+        messageView.configure(with: message, isOwnMessage: isOwnMessage, authorNickname: authorNickname)
     }
 
     override func prepareForReuse() {

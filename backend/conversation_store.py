@@ -1,10 +1,10 @@
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from conversation_models import ( ConversationMessage, ConversationSummary, CreateConversationRequest )
+from conversation_models import ( ConversationMemberSummary, ConversationListItem, IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
 
 class ConversationStore:
     def __init__(self, database_path: Path):
@@ -18,16 +18,31 @@ class ConversationStore:
         with closing(
             sqlite3.connect(self.database_path)
         ) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    turn_revision INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+
+            columns = connection.execute(
+                "PRAGMA table_info(conversations)"
+            ).fetchall()
+
+            if not any(column[1] == "turn_revision" for column in columns):
+                connection.execute(
+                    """
+                    ALTER TABLE conversations
+                    ADD COLUMN turn_revision INTEGER NOT NULL DEFAULT 0
+                    """
+                )
 
             connection.execute(
                 """
@@ -49,10 +64,34 @@ class ConversationStore:
                     role TEXT NOT NULL
                         CHECK (role IN ('owner', 'admin', 'member')),
                     joined_at TEXT NOT NULL,
+                    last_read_sequence INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (conversation_id, user_id)
                 )
                 """
             )
+
+            member_columns = connection.execute(
+                "PRAGMA table_info(conversation_members)"
+            ).fetchall()
+
+            if not any(column[1] == "last_read_sequence" for column in member_columns):
+                connection.execute(
+                    """
+                    ALTER TABLE conversation_members
+                    ADD COLUMN last_read_sequence INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+
+                connection.execute(
+                    """
+                    UPDATE conversation_members AS member
+                    SET last_read_sequence = (
+                        SELECT COALESCE(MAX(message.sequence), 0)
+                        FROM conversation_messages AS message
+                        WHERE message.conversation_id = member.conversation_id
+                    )
+                    """
+                )
 
             connection.execute(
                 """
@@ -68,6 +107,38 @@ class ConversationStore:
                     one_owner_per_conversation
                 ON conversation_members (conversation_id)
                 WHERE role = 'owner'
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_invitations (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    inviter_id TEXT NOT NULL,
+                    recipient_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN (
+                            'pending', 'accepted', 'declined',
+                            'revoked', 'expired'
+                        )),
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    responded_at TEXT,
+                    CHECK (inviter_id <> recipient_id)
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    one_pending_invitation_per_recipient
+                ON conversation_invitations (
+                    conversation_id,
+                    recipient_id
+                )
+                WHERE status = 'pending'
                 """
             )
 
@@ -93,9 +164,18 @@ class ConversationStore:
 
             row = connection.execute(
                 """
-                SELECT id, title, created_at, updated_at
-                FROM conversations
-                WHERE id = ?
+                SELECT
+                    c.id,
+                    c.title,
+                    c.created_at,
+                    c.updated_at,
+                    (
+                        SELECT COUNT(*)
+                        FROM conversation_members AS member
+                        WHERE member.conversation_id = c.id
+                    ) AS member_count
+                FROM conversations AS c
+                WHERE c.id = ?
                 """,
                 (str(request.id),),
             ).fetchone()
@@ -156,6 +236,7 @@ class ConversationStore:
                 title=title,
                 created_at=now,
                 updated_at=now,
+                member_count=1,
             )
 
             connection.commit()
@@ -166,7 +247,7 @@ class ConversationStore:
     def list_conversations(
         self,
         user_id: UUID,
-    ) -> list[ConversationSummary]:
+    ) -> list[ConversationListItem]:
         with closing(
             sqlite3.connect(self.database_path)
         ) as connection:
@@ -174,7 +255,18 @@ class ConversationStore:
 
             rows = connection.execute(
                 """
-                SELECT c.id, c.title, c.created_at, c.updated_at
+                SELECT c.id, c.title, c.created_at, c.updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM conversation_members AS member
+                    WHERE member.conversation_id = c.id
+                ) AS member_count,
+                (
+                    SELECT COUNT(*)
+                    FROM conversation_messages AS message
+                    WHERE message.conversation_id = c.id
+                    AND message.sequence > m.last_read_sequence
+                ) AS unread_count
                 FROM conversation_members AS m
                 JOIN conversations AS c ON c.id = m.conversation_id
                 WHERE m.user_id = ?
@@ -184,7 +276,7 @@ class ConversationStore:
             ).fetchall()
 
             return [
-                ConversationSummary.model_validate(dict(row))
+                ConversationListItem.model_validate(dict(row))
                 for row in rows
             ]
 
@@ -200,7 +292,12 @@ class ConversationStore:
 
             row = connection.execute(
                 """
-                SELECT c.id, c.title, c.created_at, c.updated_at
+                SELECT c.id, c.title, c.created_at, c.updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM conversation_members AS member
+                    WHERE member.conversation_id = c.id
+                ) AS member_count
                 FROM conversations AS c
                 JOIN conversation_members AS m
                     ON m.conversation_id = c.id
@@ -214,6 +311,95 @@ class ConversationStore:
                 return None
 
             return ConversationSummary.model_validate(dict(row))
+
+    def list_members(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+    ) -> list[ConversationMemberSummary] | None:
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+
+            rows = connection.execute(
+                """
+                SELECT u.id, u.nickname
+                FROM conversation_members AS viewer
+                JOIN conversation_members AS member
+                    ON member.conversation_id = viewer.conversation_id
+                JOIN users AS u
+                    ON u.id = member.user_id
+                WHERE viewer.conversation_id = ?
+                  AND viewer.user_id = ?
+                ORDER BY member.joined_at, member.user_id
+                """,
+                (str(conversation_id), str(user_id)),
+            ).fetchall()
+
+            if not rows:
+                return None
+
+            return [
+                ConversationMemberSummary.model_validate(dict(row))
+                for row in rows
+            ]
+
+    def list_turn_revisions(self, user_id: UUID) -> dict[str, int]:
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT c.id, c.turn_revision
+                FROM conversation_members AS m
+                JOIN conversations AS c ON c.id = m.conversation_id
+                WHERE m.user_id = ?
+                """,
+                (str(user_id),),
+            ).fetchall()
+
+            return dict(rows)
+
+    def mark_read(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+        sequence: int,
+    ) -> bool:
+        conversation = str(conversation_id)
+        member = str(user_id)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            row = connection.execute(
+                """
+                SELECT COALESCE((
+                    SELECT MAX(message.sequence)
+                    FROM conversation_messages AS message
+                    WHERE message.conversation_id = membership.conversation_id
+                ), 0)
+                FROM conversation_members AS membership
+                WHERE membership.conversation_id = ?
+                AND membership.user_id = ?
+                """,
+                (conversation, member),
+            ).fetchone()
+
+            if row is None:
+                return False
+
+            if sequence < 0 or sequence > row[0]:
+                raise ValueError("已读位置超出会话的消息范围。")
+
+            connection.execute(
+                """
+                UPDATE conversation_members
+                SET last_read_sequence = MAX(last_read_sequence, ?)
+                WHERE conversation_id = ? AND user_id = ?
+                """,
+                (sequence, conversation, member),
+            )
+
+            connection.commit()
+            return True
 
     def list_messages(
         self,
@@ -237,3 +423,267 @@ class ConversationStore:
                 for row in rows
             ]
 
+    def invite_friend(
+        self,
+        conversation_id: UUID,
+        inviter_id: UUID,
+        recipient_id: UUID,
+    ) -> None:
+        conversation = str(conversation_id)
+        inviter = str(inviter_id)
+        recipient = str(recipient_id)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+
+            owner = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_members
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                  AND role = 'owner'
+                """,
+                (conversation, inviter)
+            ).fetchone()
+
+            if owner is None:
+                raise PermissionError("会话不存在或无权邀请。")
+
+            if inviter == recipient:
+                raise ValueError("不能邀请自己。")
+
+
+            first_user_id, second_user_id = sorted((inviter, recipient))
+
+            friendship = connection.execute(
+                """
+                SELECT 1
+                FROM friendships
+                WHERE first_user_id = ?
+                  AND second_user_id = ?
+                """,
+                (first_user_id, second_user_id),
+            ).fetchone()
+
+            if friendship is None:
+                raise ValueError("只能邀请好友加入会话。")
+
+            member = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_members
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                """,
+                (conversation, recipient)
+            ).fetchone()
+
+            if member is not None:
+                raise ValueError("该用户已是会话成员。")
+
+            now = datetime.now(timezone.utc)
+            created_at = now.isoformat()
+            expires_at = (now + timedelta(days=7)).isoformat()
+
+            connection.execute(
+                """
+                UPDATE conversation_invitations
+                SET status = 'expired'
+                WHERE conversation_id = ?
+                  AND recipient_id = ?
+                  AND status = 'pending'
+                  AND expires_at <= ?
+                """,
+                (conversation, recipient, created_at)
+            )
+
+            connection.execute(
+                """
+                INSERT INTO conversation_invitations (
+                    id, conversation_id, inviter_id, recipient_id,
+                    status, created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(conversation_id, recipient_id)
+                    WHERE status = 'pending'
+                DO NOTHING
+                """,
+                (
+                    str(uuid4()),
+                    conversation,
+                    inviter,
+                    recipient,
+                    created_at,
+                    expires_at,
+                ),
+            )
+
+            connection.commit()
+
+    def list_incoming_invitations(
+        self,
+        recipient_id: UUID,
+    ) -> list[IncomingConversationInvitation]:
+        now = datetime.now(timezone.utc).isoformat()
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+
+            rows = connection.execute(
+                """
+                SELECT
+                    i.id,
+                    c.title AS conversation_title,
+                    u.nickname AS inviter_nickname,
+                    i.created_at,
+                    i.expires_at
+                FROM conversation_invitations AS i
+                JOIN conversations AS c ON c.id = i.conversation_id
+                JOIN users AS u ON u.id = i.inviter_id
+                WHERE i.recipient_id = ?
+                  AND i.status = 'pending'
+                  AND i.expires_at > ?
+                ORDER BY i.created_at DESC, i.id ASC
+                """,
+                (str(recipient_id), now),
+            ).fetchall()
+
+            return [
+                IncomingConversationInvitation.model_validate(dict(row))
+                for row in rows
+            ]
+
+    def accept_invitation(
+        self,
+        invitation_id: UUID,
+        recipient_id: UUID,
+    ) -> UUID | None:
+        recipient = str(recipient_id)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+
+            invitation = connection.execute(
+                """
+                SELECT i.conversation_id, i.inviter_id, i.status, i.expires_at
+                FROM conversation_invitations AS i
+                JOIN conversations AS c ON c.id = i.conversation_id
+                WHERE i.id = ? AND i.recipient_id = ?
+                """,
+                (str(invitation_id), recipient),
+            ).fetchone()
+
+            if invitation is None:
+                return None
+
+            conversation = invitation["conversation_id"]
+            conversation_id = UUID(conversation)
+
+            if invitation["status"] == "accepted":
+                member = connection.execute(
+                    """
+                    SELECT 1
+                    FROM conversation_members
+                    WHERE conversation_id = ? AND user_id = ?
+                    """,
+                    (conversation, recipient)
+                ).fetchone()
+
+                return conversation_id if member is not None else None
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            if invitation["status"] != "pending" or invitation["expires_at"] <= now:
+                return None
+
+            inviter = invitation["inviter_id"]
+
+            owner = connection.execute(
+                """
+                SELECT 1
+                FROM conversation_members
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                  AND role = 'owner'
+                """,
+                (conversation, inviter),
+            ).fetchone()
+
+            first_user_id, second_user_id = sorted((inviter, recipient))
+            friendship = connection.execute(
+                """
+                SELECT 1
+                FROM friendships
+                WHERE first_user_id = ? AND second_user_id = ?
+                """,
+                (first_user_id, second_user_id),
+            ).fetchone()
+
+            if owner is None or friendship is None:
+                return None
+
+            connection.execute(
+                """
+                INSERT INTO conversation_members (
+                    conversation_id, user_id, role, joined_at
+                )
+                VALUES (?, ?, 'member', ?)
+                ON CONFLICT(conversation_id, user_id) DO NOTHING
+                """,
+                (conversation, recipient, now),
+            )
+
+            connection.execute(
+                """
+                UPDATE conversation_invitations
+                SET status = 'accepted', responded_at = ?
+                WHERE id = ?
+                """,
+                (now, str(invitation_id)),
+            )
+
+            connection.execute(
+                """
+                UPDATE conversations
+                SET turn_revision = turn_revision + 1
+                WHERE id = ?
+                """,
+                (conversation,),
+            )
+
+            connection.commit()
+            return conversation_id
+
+    def decline_invitation(
+        self,
+        invitation_id: UUID,
+        recipient_id: UUID,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE conversation_invitations
+                SET
+                    status = 'declined',
+                    responded_at = COALESCE(responded_at, ?)
+                WHERE id = ?
+                AND recipient_id = ?
+                AND (
+                    (status = 'pending' AND expires_at > ?)
+                    OR status = 'declined'
+                )
+                """,
+                (
+                    now,
+                    str(invitation_id),
+                    str(recipient_id),
+                    now,
+                ),
+            )
+
+            connection.commit()
+            return cursor.rowcount == 1
