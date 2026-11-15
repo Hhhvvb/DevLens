@@ -12,6 +12,10 @@ protocol ConversationService {
         conversationID: UUID
     ) async throws -> [ConversationMessage]
 
+    func listMembers(
+        conversationID: UUID
+    ) async throws -> [ConversationMemberSummary]
+
     func getActiveGeneration(
         conversationID: UUID
     ) async throws -> ConversationGenerationRecovery?

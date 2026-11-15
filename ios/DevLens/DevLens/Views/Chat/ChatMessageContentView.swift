@@ -64,8 +64,19 @@ final class ChatMessageContentView: UIView {
         ])
     }
 
-    func configure(with message: ChatMessage) {
-        roleLabel.text = message.role == .user ? "你" : "DevLens"
+    func configure(with message: ChatMessage, isOwnMessage: Bool = false, authorNickname: String? = nil) {
+        let alignment: NSTextAlignment = isOwnMessage ? .right : .left
+
+        switch message.role {
+        case .user:
+            roleLabel.text = isOwnMessage ? "我" : (authorNickname ?? "成员")
+        case .assistant:
+            roleLabel.text = "DevLens"
+        }
+
+        roleLabel.textAlignment = alignment
+        statusLabel.textAlignment = alignment
+
         statusLabel.text = message.statusText
         statusLabel.isHidden = message.statusText?.isEmpty ?? true
         bodyView?.isHidden = message.text.isEmpty
@@ -84,6 +95,7 @@ final class ChatMessageContentView: UIView {
             case .user:
                 if let label = bodyView as? UILabel {
                     label.text = message.text
+                    label.textAlignment = alignment
                     return
                 }
 
@@ -106,6 +118,7 @@ final class ChatMessageContentView: UIView {
         case .user:
             let label = UILabel()
             label.text = message.text
+            label.textAlignment = alignment
             label.font = .preferredFont(forTextStyle: .body)
             label.textColor = .label
             label.numberOfLines = 0

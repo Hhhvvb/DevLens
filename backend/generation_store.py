@@ -166,9 +166,13 @@ class GenerationStore:
 
             existing_input = self.get_input(snapshot.id)
 
+            retry_input = task_input
+            if existing_input is not None and existing_input.author_id is None:
+                retry_input = task_input.model_copy(update={"author_id": None})
+
             if (
                 existing.conversation_id != snapshot.conversation_id
-                or existing_input != task_input
+                or existing_input != retry_input
             ):
                 raise GenerationConflictError(
                     "提交标识已被用于其他请求，请勿更改重试内容。"
@@ -496,6 +500,7 @@ class GenerationStore:
             conversation_id = snapshot.conversation_id,
             sequence=next_sequence,
             role="user",
+            author_id=task_input.author_id,
             text=task_input.question,
             created_at=now,
         )

@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from conversation_models import ( ConversationListItem, IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
+from conversation_models import ( ConversationMemberSummary, ConversationListItem, IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
 
 class ConversationStore:
     def __init__(self, database_path: Path):
@@ -311,6 +311,37 @@ class ConversationStore:
                 return None
 
             return ConversationSummary.model_validate(dict(row))
+
+    def list_members(
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+    ) -> list[ConversationMemberSummary] | None:
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+
+            rows = connection.execute(
+                """
+                SELECT u.id, u.nickname
+                FROM conversation_members AS viewer
+                JOIN conversation_members AS member
+                    ON member.conversation_id = viewer.conversation_id
+                JOIN users AS u
+                    ON u.id = member.user_id
+                WHERE viewer.conversation_id = ?
+                  AND viewer.user_id = ?
+                ORDER BY member.joined_at, member.user_id
+                """,
+                (str(conversation_id), str(user_id)),
+            ).fetchall()
+
+            if not rows:
+                return None
+
+            return [
+                ConversationMemberSummary.model_validate(dict(row))
+                for row in rows
+            ]
 
     def list_turn_revisions(self, user_id: UUID) -> dict[str, int]:
         with closing(sqlite3.connect(self.database_path)) as connection:

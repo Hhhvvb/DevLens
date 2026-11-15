@@ -324,7 +324,8 @@ final class ConversationListViewController: UITableViewController {
     private func showConversation(_ conversation: Conversation) {
         let controller = ChatViewController(
             conversation: conversation,
-            apiClient: conversationService
+            apiClient: conversationService,
+            currentUserID: userID
         )
 
         if memberCounts[conversation.id] != nil || serverOnlyConversationIDs.contains(conversation.id) {

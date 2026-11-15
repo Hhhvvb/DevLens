@@ -15,6 +15,7 @@ final class ChatViewController:
         }
     }
     private let viewModel: GenerationViewModel
+    private let membersViewModel: ConversationMembersViewModel
     private var isPreparingGeneration = false
     private var activeReplyID: UUID?
     private let collectionView: UICollectionView
@@ -36,14 +37,19 @@ final class ChatViewController:
     private var isReportingReadPosition = false
     private var needsConversationSync = false
     private var isSyncingConversation = false
+    private let currentUserID: UUID?
 
     private lazy var messageRegistration = UICollectionView.CellRegistration<ChatMessageCell, ChatMessage> {
         [weak self] cell, _, message in
 
         let messageID = message.id
+        let currentUserID = self?.currentUserID
+        let isOwnMessage = message.role == .user && currentUserID != nil && message.authorID == currentUserID
 
         cell.configure(
             with: message,
+            isOwnMessage: isOwnMessage,
+            authorNickname: self?.membersViewModel.nickname(for: message.authorID),
             onShowSources: { [weak self] in
                 self?.showSources(for: messageID)
             }
@@ -52,11 +58,17 @@ final class ChatViewController:
 
     init(
         conversation: Conversation = Conversation(),
-        apiClient: any GenerationService
+        apiClient: any GenerationService & ConversationService,
+        currentUserID: UUID? = nil
     ) {
         self.conversation = conversation
+        self.currentUserID = currentUserID
         self.activeReplyID = conversation.activeGeneration?.answerMessageID
         self.viewModel = GenerationViewModel(apiClient: apiClient)
+        self.membersViewModel = ConversationMembersViewModel(
+            service: apiClient,
+            conversationID: conversation.id
+        )
 
         var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
         configuration.showsSeparators = false
@@ -178,6 +190,7 @@ final class ChatViewController:
         super.viewDidAppear(animated)
 
         isPageVisible = true
+        loadMemberNamesIfNeeded()
         requestConversationSync()
         reportReadPositionIfNeeded()
 
@@ -315,7 +328,8 @@ final class ChatViewController:
 
         let question = ChatMessage(
             role: .user,
-            text: text
+            text: text,
+            authorID: currentUserID
         )
 
         let reply = ChatMessage(
@@ -667,7 +681,8 @@ final class ChatViewController:
         messages[questionIndex] = ChatMessage(
             id: snapshot.questionMessageID,
             role: .user,
-            text: question.text
+            text: question.text,
+            authorID: question.authorID
         )
         messages[questionIndex].sequence = question.sequence
 
@@ -989,12 +1004,52 @@ final class ChatViewController:
                     updateLatestButtonVisibility()
                 }
 
+                loadMemberNamesIfNeeded()
                 reportReadPositionIfNeeded()
-
                 resumeActiveGeneration()
             } catch {
                 #if DEBUG
                 print("会话同步失败：\(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    private func loadMemberNamesIfNeeded() {
+        let authorIDs = Set(messages.compactMap { message -> UUID? in
+            guard message.role == .user,
+                  let authorID = message.authorID,
+                  authorID != currentUserID else {
+                return nil
+            }
+
+            return authorID
+        })
+
+        guard !authorIDs.isEmpty else { return }
+
+        Task { [weak self, membersViewModel] in
+            do {
+                let loaded = try await membersViewModel.loadIfNeeded(for: authorIDs)
+                guard loaded, let self else { return }
+
+                let paths = self.collectionView.indexPathsForVisibleItems.filter { path in
+                    guard self.messages.indices.contains(path.item),
+                          let authorID = self.messages[path.item].authorID else {
+                        return false
+                    }
+
+                    return authorID != self.currentUserID
+                }
+
+                UIView.performWithoutAnimation {
+                    self.collectionView.reconfigureItems(at: paths)
+                }
+
+                self.loadMemberNamesIfNeeded()
+            } catch {
+                #if DEBUG
+                print("读取成员昵称失败：\(error.localizedDescription)")
                 #endif
             }
         }

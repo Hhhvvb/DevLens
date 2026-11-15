@@ -27,6 +27,11 @@ nonisolated struct ConversationSummary: Decodable, Identifiable {
     }
 }
 
+nonisolated struct ConversationMemberSummary: Decodable {
+    let id: UUID
+    let nickname: String
+}
+
 nonisolated struct ConversationUpdateEvent: Decodable {
     let isInitial: Bool
     let revisions: [String: Int]
@@ -49,6 +54,7 @@ nonisolated struct ConversationMessage: Decodable, Identifiable {
     let statusText: String?
     let isExcludedFromContext: Bool
     let createdAt: Date
+    let authorID: UUID?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -60,6 +66,7 @@ nonisolated struct ConversationMessage: Decodable, Identifiable {
         case statusText = "status_text"
         case isExcludedFromContext = "is_excluded_from_context"
         case createdAt = "created_at"
+        case authorID = "author_id"
     }
 }
 
@@ -70,7 +77,8 @@ extension ConversationMessage {
             role: role,
             text: text,
             sourceChunks: sourceChunks,
-            statusText: statusText
+            statusText: statusText,
+            authorID: authorID
         )
 
         message.isExcludedFromContext = isExcludedFromContext

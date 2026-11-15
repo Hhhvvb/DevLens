@@ -24,6 +24,10 @@ class ConversationSummary(BaseModel):
 class ConversationListItem(ConversationSummary):
     unread_count: int = Field(ge=0)
 
+class ConversationMemberSummary(BaseModel):
+    id: UUID
+    nickname: str
+
 class MarkConversationReadRequest(BaseModel):
     sequence: int = Field(ge=0)
 
@@ -32,6 +36,7 @@ class ConversationMessage(BaseModel):
     conversation_id: UUID
     sequence: int = Field(ge=1)
     role: Literal["user", "assistant"]
+    author_id: UUID | None = None
 
     text: str = ""
     source_chunks: list[CodeChunk] = Field(

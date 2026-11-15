@@ -18,7 +18,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 from generation_models import ( GenerationInput, GenerationSnapshot, GenerationState, )
 from generation_store import ( GenerationConflictError, GenerationStore, )
-from conversation_models import ( ConversationListItem, MarkConversationReadRequest, IncomingConversationInvitation, CreateConversationInvitationRequest, CreateConversationRequest, ConversationSummary, ConversationMessage, )
+from conversation_models import ( ConversationMemberSummary, ConversationListItem, MarkConversationReadRequest, IncomingConversationInvitation, CreateConversationInvitationRequest, CreateConversationRequest, ConversationSummary, ConversationMessage, )
 from conversation_store import ConversationStore
 from user_store import UserStore
 from friend_store import FriendStore
@@ -695,6 +695,7 @@ async def create_generation(
     task_input = GenerationInput(
         question=question,
         history=history,
+        author_id=user.id,
     )
 
     snapshot = GenerationSnapshot(
@@ -963,6 +964,31 @@ async def get_conversation(
         )
 
     return conversation
+
+@app.get(
+    "/v1/conversations/{conversation_id}/members",
+    response_model=list[ConversationMemberSummary],
+)
+async def list_conversation_members(
+    conversation_id: UUID,
+    http_request: Request,
+    user: AuthUser = Depends(get_current_user),
+):
+    store = http_request.app.state.conversation_store
+
+    members = await run_in_threadpool(
+        store.list_members,
+        conversation_id,
+        user.id
+    )
+
+    if members is None:
+        raise HTTPException(
+            status_code=404,
+            detail="会话不存在或无权访问。",
+        )
+
+    return members
 
 @app.get("/v1/conversation-events")
 async def subscribe_conversation_events(

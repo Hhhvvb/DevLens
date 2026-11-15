@@ -592,6 +592,23 @@ final class APIClient:
         )
     }
 
+    func listMembers(
+        conversationID: UUID
+    ) async throws -> [ConversationMemberSummary] {
+        guard let accessToken = accessTokenProvider() else {
+            throw APIError.httpFailure(
+                statusCode: 401,
+                message: "请先登录。",
+            )
+        }
+
+        return try await sendJSONRequest(
+            path: "/v1/conversations/\(conversationID.uuidString)/members",
+            method: "GET",
+            accessToken: accessToken
+        )
+    }
+
     func getActiveGeneration(
         conversationID: UUID
     ) async throws -> ConversationGenerationRecovery? {
