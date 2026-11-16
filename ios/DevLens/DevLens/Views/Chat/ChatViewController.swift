@@ -1033,17 +1033,21 @@ final class ChatViewController:
                 let loaded = try await membersViewModel.loadIfNeeded(for: authorIDs)
                 guard loaded, let self else { return }
 
-                let paths = self.collectionView.indexPathsForVisibleItems.filter { path in
-                    guard self.messages.indices.contains(path.item),
-                          let authorID = self.messages[path.item].authorID else {
-                        return false
+                let paths = self.messages.enumerated().compactMap { index, message -> IndexPath? in
+                    guard message.role == .user,
+                          let authorID = message.authorID,
+                          authorID != self.currentUserID,
+                          membersViewModel.nickname(for: authorID) != nil else {
+                        return nil
                     }
 
-                    return authorID != self.currentUserID
+                    return IndexPath(item: index, section: 0)
                 }
 
-                UIView.performWithoutAnimation {
-                    self.collectionView.reconfigureItems(at: paths)
+                if !paths.isEmpty {
+                    UIView.performWithoutAnimation {
+                        self.collectionView.reconfigureItems(at: paths)
+                    }
                 }
 
                 self.loadMemberNamesIfNeeded()
