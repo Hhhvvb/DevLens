@@ -626,6 +626,26 @@ final class APIClient:
         )
     }
 
+    func register(_ request: RegisterRequest) async throws -> RegisterResponse {
+        let body = try JSONEncoder().encode(request)
+
+        return try await sendJSONRequest(
+            path: "/v1/auth/register",
+            method: "POST",
+            body: body
+        )
+    }
+
+    func verifyEmail(_ request: VerifyEmailRequest) async throws -> VerifyEmailResponse {
+        let body = try JSONEncoder().encode(request)
+
+        return try await sendJSONRequest(
+            path: "/v1/auth/verify-email",
+            method: "POST",
+            body: body
+        )
+    }
+
     func login(
         _ request: LoginRequest
     ) async throws -> LoginResponse {

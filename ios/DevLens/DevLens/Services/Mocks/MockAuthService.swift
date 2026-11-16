@@ -4,9 +4,15 @@ import Foundation
 
 nonisolated enum MockAuthError: LocalizedError {
     case invalidCredentials
+    case registrationFailed
 
     var errorDescription: String? {
-        "邮箱或密码不正确。"
+        switch self {
+        case .invalidCredentials:
+            return "邮箱或密码不正确。"
+        case .registrationFailed:
+            return "注册或邮箱验证失败。"
+        }
     }
 }
 
@@ -21,6 +27,22 @@ final class MockAuthService: AuthService {
 
     init(scenario: Scenario) {
         self.scenario = scenario
+    }
+
+    func register(_ request: RegisterRequest) async throws -> RegisterResponse {
+        guard case .success = scenario else {
+            throw MockAuthError.registrationFailed
+        }
+
+        return RegisterResponse(message: "请查收邮箱验证邮件。")
+    }
+
+    func verifyEmail(_ request: VerifyEmailRequest) async throws -> VerifyEmailResponse {
+        guard case .success = scenario else {
+            throw MockAuthError.registrationFailed
+        }
+
+        return VerifyEmailResponse(message: "邮箱验证成功。")
     }
 
     func login(

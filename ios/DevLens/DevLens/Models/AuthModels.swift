@@ -32,3 +32,21 @@ nonisolated struct RefreshRequest: Encodable {
         case refreshToken = "refresh_token"
     }
 }
+
+nonisolated struct RegisterRequest: Encodable {
+    let email: String
+    let password: String
+    let nickname: String
+}
+
+nonisolated struct RegisterResponse: Decodable {
+    let message: String
+}
+
+nonisolated struct VerifyEmailRequest: Encodable {
+    let token: String
+}
+
+nonisolated struct VerifyEmailResponse: Decodable {
+    let message: String
+}
