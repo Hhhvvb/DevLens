@@ -5,6 +5,7 @@ final class LoginViewController: UIViewController {
     private let emailField = UITextField()
     private let passwordField = UITextField()
     private let loginButton = UIButton(type: .system)
+    private let registerButton = UIButton(type: .system)
     private let viewModel: LoginViewModel
     private let errorLabel = UILabel()
     private let authService: any AuthService
@@ -39,6 +40,11 @@ final class LoginViewController: UIViewController {
             UIAction { [weak self] _ in
                 self?.submitLogin()
             },
+            for: .touchUpInside
+        )
+
+        registerButton.addAction(
+            UIAction { [weak self] _ in self?.showRegistration() },
             for: .touchUpInside
         )
 
@@ -88,6 +94,10 @@ final class LoginViewController: UIViewController {
         loginButton.configuration = configuration
         loginButton.isEnabled = true
 
+        var registerConfiguration = UIButton.Configuration.plain()
+        registerConfiguration.title = "创建账号"
+        registerButton.configuration = registerConfiguration
+
         errorLabel.font = .preferredFont(forTextStyle: .footnote)
         errorLabel.adjustsFontForContentSizeCategory = true
         errorLabel.textColor = .systemRed
@@ -101,7 +111,8 @@ final class LoginViewController: UIViewController {
                 emailField,
                 passwordField,
                 errorLabel,
-                loginButton
+                loginButton,
+                registerButton
             ]
         )
 
@@ -138,6 +149,22 @@ final class LoginViewController: UIViewController {
             )
 
         ])
+    }
+
+    private func showRegistration() {
+        view.endEditing(true)
+
+        let page = RegistrationViewController(
+            viewModel: RegistrationViewModel(service: authService)
+        )
+
+        page.onVerified = { [weak self] email in
+            self?.emailField.text = email
+            self?.passwordField.text = nil
+            self?.viewModel.clearError()
+        }
+
+        navigationController?.pushViewController(page, animated: true)
     }
 
     private func submitLogin() {
@@ -178,6 +205,7 @@ final class LoginViewController: UIViewController {
         emailField.isEnabled = !isLoading
         passwordField.isEnabled = !isLoading
         loginButton.isEnabled = !isLoading
+        registerButton.isEnabled = !isLoading
 
         var configuration = loginButton.configuration
         configuration?.showsActivityIndicator = isLoading
