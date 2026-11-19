@@ -15,7 +15,7 @@
 ## iPhone 真机
 
 1. 让 iPhone 和 Mac 连接同一局域网。
-2. 启动 API 时，将 [快速开始](../README.md#快速开始) 中的 `--host 127.0.0.1` 改为 `--host 0.0.0.0`。
+2. 按 README 的命令启动 API，使用 `--host 0.0.0.0`，让手机能通过 Mac 的局域网 IP 访问服务。
 3. 在 [APIClient.swift](../ios/DevLens/DevLens/Services/Networking/APIClient.swift) 中，将真机分支的 `baseURL` 改为 `http://<Mac 的局域网 IP>:8000`。在 [Info.plist](../ios/DevLens/DevLens/Info.plist) 的 `NSExceptionDomains` 中同步更新对应的 IP。
 4. 用 iPhone Safari 打开该地址的 `/health`，确认能连接后再从 Xcode 运行 App。按需在 Signing & Capabilities 选择自己的签名团队，并在 App 请求时允许本地网络访问。
 

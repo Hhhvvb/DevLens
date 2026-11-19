@@ -13,6 +13,7 @@ class CreateConversationRequest(BaseModel):
         min_length=1,
         max_length=80,
     )
+    source_snapshot_id: UUID | None = None
 
 class ConversationSummary(BaseModel):
     id: UUID
@@ -20,6 +21,7 @@ class ConversationSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     member_count: int = Field(ge=1)
+    source_snapshot_id: UUID | None = None
 
 class ConversationListItem(ConversationSummary):
     unread_count: int = Field(ge=0)

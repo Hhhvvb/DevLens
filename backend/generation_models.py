@@ -8,6 +8,7 @@ class GenerationInput(BaseModel):
     question: str = Field(min_length=1, max_length=3000)
     history: list[tuple[Literal["human", "ai"], str]] = Field(default_factory=list, max_length=40,)
     author_id: UUID | None = None
+    collection_name: str | None = None
 
 class GenerationState(str, Enum):
     queued = "queued"

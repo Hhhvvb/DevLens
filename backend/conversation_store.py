@@ -1,9 +1,11 @@
 import sqlite3
+
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from source_snapshot_store import SourceSnapshotStore
 from conversation_models import ( ConversationMemberSummary, ConversationListItem, IncomingConversationInvitation, ConversationMessage, ConversationSummary, CreateConversationRequest )
 
 class ConversationStore:
@@ -14,6 +16,8 @@ class ConversationStore:
             parents=True,
             exist_ok=True,
         )
+
+        SourceSnapshotStore(database_path)
 
         with closing(
             sqlite3.connect(self.database_path)
@@ -27,7 +31,8 @@ class ConversationStore:
                     title TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    turn_revision INTEGER NOT NULL DEFAULT 0
+                    turn_revision INTEGER NOT NULL DEFAULT 0,
+                    source_snapshot_id TEXT
                 )
                 """
             )
@@ -42,6 +47,11 @@ class ConversationStore:
                     ALTER TABLE conversations
                     ADD COLUMN turn_revision INTEGER NOT NULL DEFAULT 0
                     """
+                )
+
+            if not any(column[1] == "source_snapshot_id" for column in columns):
+                connection.execute(
+                    "ALTER TABLE conversations ADD COLUMN source_snapshot_id TEXT"
                 )
 
             connection.execute(
@@ -151,6 +161,12 @@ class ConversationStore:
     ) -> ConversationSummary:
         title = request.title.strip()
 
+        source_snapshot_id = (
+            str(request.source_snapshot_id)
+            if request.source_snapshot_id is not None
+            else None
+        )
+
         if not title:
             raise ValueError("会话标题不能只包含空白字符。")
 
@@ -194,7 +210,23 @@ class ConversationStore:
                 if membership is None:
                     raise PermissionError("会话不存在或无权访问。")
 
+                if row["source_snapshot_id"] != source_snapshot_id:
+                    raise ValueError("会话已绑定其他源码版本。")
+
                 return ConversationSummary.model_validate(dict(row))
+
+            if source_snapshot_id is not None:
+                snapshot = connection.execute(
+                    """
+                    SELECT 1
+                    FROM source_snapshots
+                    WHERE id = ? AND owner_id = ?
+                    """,
+                    (source_snapshot_id, str(user_id)),
+                ).fetchone()
+
+                if snapshot is None:
+                    raise PermissionError("源码版本不存在或无权使用。")
 
             connection.execute(
                 """
@@ -202,15 +234,17 @@ class ConversationStore:
                     id,
                     title,
                     created_at,
-                    updated_at
+                    updated_at,
+                    source_snapshot_id
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     str(request.id),
                     title,
                     now,
                     now,
+                    source_snapshot_id,
                 )
             )
 
@@ -237,6 +271,7 @@ class ConversationStore:
                 created_at=now,
                 updated_at=now,
                 member_count=1,
+                source_snapshot_id=request.source_snapshot_id,
             )
 
             connection.commit()
@@ -255,7 +290,7 @@ class ConversationStore:
 
             rows = connection.execute(
                 """
-                SELECT c.id, c.title, c.created_at, c.updated_at,
+                SELECT c.id, c.title, c.created_at, c.updated_at, c.source_snapshot_id,
                 (
                     SELECT COUNT(*)
                     FROM conversation_members AS member
@@ -292,7 +327,7 @@ class ConversationStore:
 
             row = connection.execute(
                 """
-                SELECT c.id, c.title, c.created_at, c.updated_at,
+                SELECT c.id, c.title, c.created_at, c.updated_at, c.source_snapshot_id,
                 (
                     SELECT COUNT(*)
                     FROM conversation_members AS member
@@ -438,17 +473,21 @@ class ConversationStore:
 
             owner = connection.execute(
                 """
-                SELECT 1
-                FROM conversation_members
-                WHERE conversation_id = ?
-                  AND user_id = ?
-                  AND role = 'owner'
+                SELECT c.source_snapshot_id
+                FROM conversations AS c
+                JOIN conversation_members AS m ON m.conversation_id = c.id
+                WHERE c.id = ?
+                AND m.user_id = ?
+                AND m.role = 'owner'
                 """,
                 (conversation, inviter)
             ).fetchone()
 
             if owner is None:
                 raise PermissionError("会话不存在或无权邀请。")
+
+            if owner[0] is not None:
+                raise ValueError("绑定源码版本的会话目前仅供所有者使用。")
 
             if inviter == recipient:
                 raise ValueError("不能邀请自己。")

@@ -67,7 +67,7 @@ DEEPSEEK_API_KEY=你的密钥
 | --- | --- | --- |
 | 1. Chroma | `chroma run --path .chroma --host 127.0.0.1 --port 8001` | 保持终端运行 |
 | 2. 建索引 | `python build_index.py` | 输出索引片段数量后退出 |
-| 3. API | `python -m uvicorn main:app --reload --env-file .env --host 127.0.0.1 --port 8000` | 出现 `Application startup complete` |
+| 3. API | `python -m uvicorn main:app --reload --env-file .env --host 0.0.0.0 --port 8000` | 出现 `Application startup complete` |
 | 4. 生成 worker | `python generation_worker.py` | 出现「后台执行器已就绪」 |
 
 建索引的终端可以接着运行 API。Chroma、API 和 worker 各自保持运行。打开 [健康检查](http://127.0.0.1:8000/health)，确认返回 `"status": "ok"`。

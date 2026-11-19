@@ -39,34 +39,36 @@ def build_repo_context(chunks: list[CodeChunk]) -> str:
 
     return "\n\n".join(sections)
 
-def load_code_chunks() -> list[CodeChunk]:
+def split_code_file(path: str, content: str) -> list[CodeChunk]:
+    lines = content.splitlines()
     chunks: list[CodeChunk] = []
-
     chunk_size = 40
     overlap = 8
     step = chunk_size - overlap
 
+    for start in range(0, len(lines), step):
+        end = min(start + chunk_size, len(lines))
+        chunks.append(
+            CodeChunk(
+                path=path,
+                start_line=start + 1,
+                end_line=end,
+                content="\n".join(lines[start:end]),
+            )
+        )
+
+        if end == len(lines):
+            break
+
+    return chunks
+
+def load_code_chunks() -> list[CodeChunk]:
+    chunks: list[CodeChunk] = []
+
     for relative_path in SOURCE_FILES:
         file_path = PROJECT_ROOT / relative_path
-        lines = file_path.read_text(
-            encoding="utf-8"
-        ).splitlines()
-
-        for start in range(0, len(lines), step):
-            end = min(start + chunk_size, len(lines))
-            content = "\n".join(lines[start:end])
-
-            chunks.append(
-                CodeChunk(
-                    path=relative_path,
-                    start_line=start + 1,
-                    end_line=end,
-                    content=content
-                )
-            )
-
-            if end == len(lines):
-                break
+        content = file_path.read_text(encoding="utf-8")
+        chunks.extend(split_code_file(relative_path, content))
 
     return chunks
 

@@ -33,6 +33,7 @@ async def execute_generation(
             retriever,
             task_input.question,
             task_input.history,
+            collection_name=task_input.collection_name,
         )
 
         saved = await asyncio.to_thread(

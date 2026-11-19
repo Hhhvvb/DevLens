@@ -6,13 +6,13 @@ from repo_context import CodeChunk, search_code_chunks
 from hybrid_retrieval import fuse_rankings
 
 class CodeRetriever:
-    def __init__(self):
+    def __init__(self, collection_name: str = COLLECTION_NAME):
         self.client = chromadb.HttpClient(
             host="127.0.0.1",
             port=8001,
         )
 
-        self.collection = self.client.get_collection(name=COLLECTION_NAME, embedding_function=None)
+        self.collection = self.client.get_collection(name=collection_name, embedding_function=None)
 
         if self.collection.count() == 0:
             raise RuntimeError("索引中没有源码片段，请先运行 build_index.py 建立索引。")
@@ -32,7 +32,7 @@ class CodeRetriever:
             max_length=512,
         )
 
-    def search(self, question: str, top_k: int = 3) -> list[CodeChunk]:
+    def search(self, question: str, top_k: int = 3, *, collection_name: str | None = None,) -> list[CodeChunk]:
         question = question.strip()
 
         if not question:
@@ -41,7 +41,15 @@ class CodeRetriever:
         if top_k <= 0:
             raise ValueError("top_k 必须大于 0")
 
-        count = self.collection.count()
+        collection = self.collection
+
+        if collection_name is not None:
+            collection = self.client.get_collection(
+                name=collection_name,
+                embedding_function=None,
+            )
+
+        count = collection.count()
 
         if count == 0:
             raise RuntimeError("索引为空，请重新建立索引。")
@@ -63,7 +71,7 @@ class CodeRetriever:
             normalize_embeddings=True,
         )
 
-        result = self.collection.query(
+        result = collection.query(
             query_embeddings=query_vectors.tolist(),
             n_results=min(candidate_count, count),
             include=["documents", "metadatas"],
@@ -84,7 +92,7 @@ class CodeRetriever:
                 )
             )
 
-        stored = self.collection.get(
+        stored = collection.get(
             include=["documents", "metadatas"],
         )
 

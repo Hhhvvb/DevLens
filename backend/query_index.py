@@ -1,7 +1,14 @@
+from argparse import ArgumentParser
+
 from code_retriever import CodeRetriever
+from build_index import COLLECTION_NAME
 
 def main():
-    retriever = CodeRetriever()
+    parser = ArgumentParser(description="检索 DevLens 源码索引")
+    parser.add_argument("--collection", default=COLLECTION_NAME)
+    args = parser.parse_args()
+
+    retriever = CodeRetriever(collection_name=args.collection)
 
     print("\n检索器已就绪，输入 /exit 退出。")
 

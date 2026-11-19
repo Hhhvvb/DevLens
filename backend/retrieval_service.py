@@ -6,6 +6,8 @@ def search_with_history(
     retriever: CodeRetriever,
     question: str,
     history: list[tuple[str, str]],
+    *,
+    collection_name: str | None = None,
 ) -> list[CodeChunk]:
     queries = [question]
 
@@ -29,7 +31,10 @@ def search_with_history(
     rankings: list[list[CodeChunk]] = []
 
     for query in queries:
-        chunks = retriever.search(query)
+        chunks = retriever.search(
+            query,
+            collection_name=collection_name,
+        )
         rankings.append(chunks)
 
     if len(rankings) == 1:

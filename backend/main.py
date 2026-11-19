@@ -32,6 +32,7 @@ from session_store import SessionStore
 from auth_dependencies import get_current_user
 from avatar_service import MAX_AVATAR_UPLOAD_BYTES, prepare_avatar
 from friend_models import FriendSummary, IncomingFriendRequest
+from source_snapshot_store import SourceSnapshotStore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,6 +49,11 @@ async def lifespan(app: FastAPI):
 
     app.state.conversation_store = await run_in_threadpool(
         ConversationStore,
+        database_path,
+    )
+
+    app.state.source_snapshot_store = await run_in_threadpool(
+        SourceSnapshotStore,
         database_path,
     )
 
@@ -692,10 +698,30 @@ async def create_generation(
 
     history = prepare_history(request)
 
+    collection_name = None
+
+    if conversation.source_snapshot_id is not None:
+        source_store = http_request.app.state.source_snapshot_store
+
+        source_snapshot = await run_in_threadpool(
+            source_store.get_for_owner,
+            conversation.source_snapshot_id,
+            user.id,
+        )
+
+        if source_snapshot is None:
+            raise HTTPException(
+                status_code=404,
+                detail="源码版本不存在或无权访问。",
+            )
+
+        collection_name = source_snapshot.collection_name
+
     task_input = GenerationInput(
         question=question,
         history=history,
         author_id=user.id,
+        collection_name=collection_name
     )
 
     snapshot = GenerationSnapshot(
@@ -835,7 +861,7 @@ async def create_conversation(
     except PermissionError as error:
         raise HTTPException(
             status_code=404,
-            detail="会话不存在或无权访问。",
+            detail=str(error),
         ) from error
     except ValueError as error:
         raise HTTPException(
